@@ -1,0 +1,7 @@
+.env
+.env.*
+
+# Ignore extra mcp.json copies so a raw API token cannot be committed.
+# .cursor/mcp.json is the env-var template and stays tracked.
+mcp.json
+!.cursor/mcp.json
