@@ -255,6 +255,8 @@ export function parseGithub(body: string): RawItem[] {
   });
 }
 
+const countSchema = z.union([z.number(), z.string()]).nullish();
+
 const tweetSchema = z.object({
   tweets: z
     .array(
@@ -263,6 +265,13 @@ const tweetSchema = z.object({
         text: z.string().optional(),
         url: z.string().optional(),
         createdAt: z.string().optional(),
+        viewCount: countSchema,
+        author: z
+          .object({
+            userName: z.string().nullish(),
+            followers: countSchema,
+          })
+          .nullish(),
       }),
     )
     .optional(),
@@ -270,19 +279,52 @@ const tweetSchema = z.object({
   error: z.union([z.string(), z.number()]).optional(),
 });
 
-export function parseTweets(body: string): RawItem[] {
+export interface ParsedTweet {
+  item: RawItem;
+  handle: string | null;
+  followers: number | null;
+  viewCount: number | null;
+}
+
+function finiteCount(value: number | string | null | undefined): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const n = Number(value);
+    if (Number.isFinite(n)) return n;
+  }
+  return null;
+}
+
+function handleFromTweet(url: string, userName: string | null | undefined): string | null {
+  const named = userName?.trim().replace(/^@/, '');
+  if (named) return named;
+  try {
+    const parts = new URL(url).pathname.split('/').filter(Boolean);
+    if (parts.length >= 2 && parts[1]?.toLowerCase() === 'status' && parts[0] && parts[0].toLowerCase() !== 'i') return parts[0];
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function parseTweets(body: string): ParsedTweet[] {
   const parsed = tweetSchema.parse(JSON.parse(body));
   return (parsed.tweets ?? []).map((row) => {
     const id = String(row.id);
     const url = row.url && /^https?:\/\//i.test(row.url) ? row.url : `https://x.com/i/status/${id}`;
     const published = row.createdAt ? new Date(row.createdAt) : null;
     return {
-      sourceId: 'twitter',
-      title: (row.text ?? '').slice(0, 180) || `tweet ${id}`,
-      url,
-      summary: row.text ?? null,
-      publishedAt: published && !Number.isNaN(published.getTime()) ? published : null,
-      dedupeKey: `twitter:${id}`,
+      item: {
+        sourceId: 'twitter',
+        title: (row.text ?? '').slice(0, 180) || `tweet ${id}`,
+        url,
+        summary: row.text ?? null,
+        publishedAt: published && !Number.isNaN(published.getTime()) ? published : null,
+        dedupeKey: `twitter:${id}`,
+      },
+      handle: handleFromTweet(url, row.author?.userName),
+      followers: finiteCount(row.author?.followers),
+      viewCount: finiteCount(row.viewCount),
     };
   });
 }

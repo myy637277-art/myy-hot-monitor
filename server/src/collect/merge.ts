@@ -8,9 +8,14 @@ export interface MatchCandidate {
   embedding: Float32Array | null;
 }
 
+function isTweet(dedupeKey: string): boolean {
+  return dedupeKey.startsWith('twitter:');
+}
+
 /**
- * Three layers, in order: same dedupe key (normalized URL / tweet id / BV / hot word),
- * SimHash within distance 3, then cosine ≥ 0.90 when both embeddings exist and the layer is enabled.
+ * Same dedupe key first (normalized URL / tweet id / BV / hot word).
+ * An X item joins only on that key: SimHash and embeddings never attach it to another source.
+ * Other sources still use SimHash within distance 3, then cosine ≥ 0.90 when both embeddings exist and the layer is enabled.
  */
 export function decideMatch(
   incoming: { dedupeKey: string; simhash: bigint | null; embedding: Float32Array | null },
@@ -19,10 +24,13 @@ export function decideMatch(
 ): string | null {
   const byKey = existing.find((row) => row.dedupeKey === incoming.dedupeKey);
   if (byKey) return byKey.storyId;
+  if (isTweet(incoming.dedupeKey)) return null;
+
+  const pool = existing.filter((row) => !isTweet(row.dedupeKey));
 
   if (incoming.simhash != null) {
     let best: { storyId: string; dist: number } | null = null;
-    for (const row of existing) {
+    for (const row of pool) {
       if (row.simhash == null) continue;
       const dist = hamming(incoming.simhash, row.simhash);
       if (dist <= SIMHASH_DISTANCE && (best == null || dist < best.dist)) best = { storyId: row.storyId, dist };
@@ -32,7 +40,7 @@ export function decideMatch(
 
   if (useEmbedding && incoming.embedding) {
     let best: { storyId: string; score: number } | null = null;
-    for (const row of existing) {
+    for (const row of pool) {
       if (!row.embedding) continue;
       const score = cosine(incoming.embedding, row.embedding);
       if (score >= EMBEDDING_THRESHOLD && (best == null || score > best.score)) best = { storyId: row.storyId, score };

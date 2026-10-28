@@ -79,8 +79,9 @@ export function visibleItems(items: HomeItem[], now: Date): HomeItem[] {
 export function passesHomeGate(items: HomeItem[]): boolean {
   if (items.length === 0) return false;
   const postsOnly = items.every((item) => POST.has(item.sourceType));
-  if (postsOnly && new Set(items.map((item) => item.sourceId)).size < 2) return false;
-  return true;
+  if (!postsOnly) return true;
+  if (items.every((item) => item.sourceType === 'twitter')) return true;
+  return new Set(items.map((item) => item.sourceId)).size >= 2;
 }
 
 export function homepageCards(rows: HomeRow[], now: Date, modelOpen: boolean): HotStory[] {

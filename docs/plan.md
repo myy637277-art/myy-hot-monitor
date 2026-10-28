@@ -6,13 +6,13 @@ React + Vite 前端，Express + SQLite 后端，共享类型在 `shared`。前�
 
 采集在 Express 进程里排队。`POST /api/v1/collect` 返回 202，后台依次采集、打分、匹配关键词。搜索间隔和每日上限留在各采集函数里。
 
-去重使用规范化网址和 SimHash。Embedding 层固定跳过，设置页说明当前只按网址和 SimHash 合并。
+去重使用规范化网址和 SimHash。X 只在规范网址指向同一条推文时并入，不按 SimHash 或向量相似度并到其他来源。Embedding 层固定跳过，设置页说明当前只按网址和 SimHash 合并。
 
 打分在 `server/src/ai/score.ts`。热度和规则可信度在 `formula.ts`，封顶 30 不变。模型调用在 `server/src/ai/deepseek.ts`：一次 `POST https://api.deepseek.com/chat/completions`，`thinking.type` 为 `disabled`，`response_format.type` 为 `json_object`，`max_tokens` 为 4096。主模型 id 是 `deepseek-v4-flash`；若接口以模型错误拒绝它，再请求一次 `deepseek-flash`。用量记在 `usage_daily` 的 `deepseek` 行，只作计数，不拦截打分。没有本地每日请求上限。
 
 ## 首页
 
-首页只放近 7 天、并且有发布时间的故事。微博和 B 站不出现。搜索结果只留已知科技站点、官方博客、机器之心和量子位。单独一条低互动帖子（X、HN、GitHub）要有第二个来源才显示。
+首页只放近 7 天、并且有发布时间的故事。微博和 B 站不出现。搜索结果只留已知科技站点、官方博客、机器之心和量子位。单独一条 HN 或 GitHub 帖子要有第二个来源才显示。过了官方账号或 10 万粉丝、以及浏览量门槛的 X 可以单独出现。
 
 排序看有没有多个来源、来源强弱、发布时间。先显示 15 条，其余在「更多」后面。卡片标题用模型写的中文事件句。
 
