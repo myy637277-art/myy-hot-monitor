@@ -1,4 +1,13 @@
-import type { CollectProgress, SourcesResponse, SourceStatus, StoriesResponse, WatchesResponse } from '@hot/shared';
+import type {
+  CollectProgress,
+  DigestResponse,
+  DigestSendResponse,
+  DigestSettings,
+  SourcesResponse,
+  SourceStatus,
+  StoriesResponse,
+  WatchesResponse,
+} from '@hot/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef } from 'react';
 
@@ -100,6 +109,41 @@ export function useDeleteWatch() {
   return useMutation({
     mutationFn: (id: string) => watchRequest(`/api/v1/watches/${id}`, { method: 'DELETE' }),
     onSuccess: () => client.invalidateQueries({ queryKey: ['watches'] }),
+  });
+}
+
+export function useDigest() {
+  return useQuery({
+    queryKey: ['digest'],
+    queryFn: () => getJson<DigestResponse>('/api/v1/digest'),
+  });
+}
+
+export function useSaveDigest() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (body: Pick<DigestSettings, 'enabled' | 'hour' | 'minute' | 'includeHome' | 'includeKeywords'>) => {
+      const res = await fetch('/api/v1/digest', {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error('没有保存成功');
+      return (await res.json()) as DigestResponse;
+    },
+    onSuccess: (data) => client.setQueryData(['digest'], data),
+  });
+}
+
+export function useSendDigest() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/v1/digest/send', { method: 'POST' });
+      if (!res.ok) throw new Error('没有发送成功');
+      return (await res.json()) as DigestSendResponse;
+    },
+    onSuccess: () => client.invalidateQueries({ queryKey: ['digest'] }),
   });
 }
 

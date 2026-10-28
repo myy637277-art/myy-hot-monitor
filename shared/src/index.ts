@@ -138,3 +138,31 @@ export interface HealthResponse {
   /** Only whether each integration's env vars are set; never the values. */
   integrations: Record<IntegrationName, boolean>;
 }
+
+export type DigestReason = 'sent' | 'empty' | 'unconfigured' | 'failed' | 'skipped';
+
+export interface DigestSettings {
+  enabled: boolean;
+  /** Hour in Asia/Shanghai, 0–23. */
+  hour: number;
+  /** Minute in Asia/Shanghai, 0–59. */
+  minute: number;
+  includeHome: boolean;
+  includeKeywords: boolean;
+  /** Shanghai calendar day of the last successful scheduled send. */
+  lastSentOn: string | null;
+  lastStatus: DigestReason | null;
+  lastHttpStatus: number | null;
+}
+
+export interface DigestResponse {
+  ok: true;
+  digest: DigestSettings;
+}
+
+export interface DigestSendResponse {
+  ok: true;
+  reason: DigestReason;
+  count: number;
+  httpStatus: number | null;
+}

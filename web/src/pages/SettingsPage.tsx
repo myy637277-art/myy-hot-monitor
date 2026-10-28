@@ -1,12 +1,13 @@
+import { useRef, useState } from 'react';
 import { useOutletContext } from 'react-router';
-import type { IntegrationName, SourceRunStatus } from '@hot/shared';
+import type { DigestReason, DigestSettings, IntegrationName, SourceRunStatus } from '@hot/shared';
 import { Agent, agents, expressionLabels, type AgentId, type Expression } from '../components/agents/Agent.tsx';
 import { Badge, type Tone } from '../components/ui/Badge.tsx';
 import { Button } from '../components/ui/Button.tsx';
 import { HudCard } from '../components/ui/HudCard.tsx';
 import { Meter } from '../components/ui/Meter.tsx';
 import { PageHeader } from '../components/ui/PageHeader.tsx';
-import { collectStatus, usageLabel, useCollect, useSources } from '../lib/feed.ts';
+import { collectStatus, usageLabel, useCollect, useDigest, useSaveDigest, useSendDigest, useSources } from '../lib/feed.ts';
 import type { HealthState } from '../lib/useHealth.ts';
 
 const integrationLabels: Record<IntegrationName, string> = {
@@ -50,7 +51,7 @@ export function SettingsPage() {
   return (
     <>
       <PageHeader code="05 SETTINGS" title="设置">
-        各来源今天的状态和用量。来源开关和信誉表会在后面的里程碑出现。
+        各来源今天的状态和用量。日报的推送时间在下面。来源开关和信誉表会在后面的里程碑出现。
       </PageHeader>
 
       <HudCard
@@ -106,13 +107,15 @@ export function SettingsPage() {
         )}
       </HudCard>
 
+      <DigestCard serverchan={integrations?.serverchan ?? null} />
+
       <div className="grid gap-4 lg:grid-cols-2">
         <HudCard code="KEYS" title="密钥配置">
           <p className="mb-3 text-sm text-muted">只显示是否已在 server/.env 中设置，不会显示具体值。</p>
           {integrations && (
             <p className="mb-3 text-sm text-muted">
               {integrations.serverchan
-                ? 'Server酱已设置。关键词命中会推送到微信。'
+                ? 'Server酱已设置。关键词命中和日报会推送到微信。'
                 : '未配置 SERVERCHAN_SENDKEY，命中只记在站内，不推送到微信。'}
             </p>
           )}
@@ -198,4 +201,147 @@ export function SettingsPage() {
       </HudCard>
     </>
   );
+}
+
+const digestStatus: Record<DigestReason, string> = {
+  sent: '已推送到微信',
+  empty: '没有内容，未发送',
+  unconfigured: '未配置 Server酱，未发送',
+  failed: '推送失败',
+  skipped: '今天的定时日报已经发过',
+};
+
+function padTime(value: number): string {
+  return String(value).padStart(2, '0');
+}
+
+function DigestCard({ serverchan }: { serverchan: boolean | null }) {
+  const digest = useDigest();
+  return (
+    <HudCard code="DIGEST" title="日报" className="mb-4">
+      <p className="mb-3 text-sm text-muted">
+        默认 08:00（北京时间），只含首页当天的故事。打开「每天推送」后到点推一次。关键词命中要另外勾选。没有内容不会发送。
+      </p>
+      {serverchan === false && <p className="mb-3 text-sm text-muted">未配置 Server酱，日报只会记结果，不会推到微信。</p>}
+      {digest.isPending && <p className="text-sm text-muted">正在读取日报设置…</p>}
+      {digest.isError && (
+        <p role="alert" className="text-sm text-accent-text">
+          日报设置加载失败。确认后端已启动后再试。
+        </p>
+      )}
+      {digest.data && <DigestForm settings={digest.data.digest} />}
+    </HudCard>
+  );
+}
+
+function DigestForm({ settings }: { settings: DigestSettings }) {
+  const save = useSaveDigest();
+  const send = useSendDigest();
+  const sending = useRef(false);
+  const [hour, setHour] = useState(settings.hour);
+  const [minute, setMinute] = useState(settings.minute);
+  const [includeHome, setIncludeHome] = useState(settings.includeHome);
+  const [includeKeywords, setIncludeKeywords] = useState(settings.includeKeywords);
+  const [enabled, setEnabled] = useState(settings.enabled);
+  const payload = { enabled, hour, minute, includeHome, includeKeywords };
+  const busy = save.isPending || send.isPending;
+  const reason = send.data?.reason ?? settings.lastStatus;
+  const count = send.data?.count;
+  const httpStatus = send.data?.httpStatus ?? settings.lastHttpStatus;
+  const statusText = reason ? digestStatus[reason] : null;
+
+  return (
+    <form
+      className="space-y-3"
+      onSubmit={(event) => {
+        event.preventDefault();
+        save.mutate(payload);
+      }}
+    >
+      <div className="flex flex-col gap-3 sm:flex-row">
+        <label className="text-sm" htmlFor="digest-hour">
+          <span className="mb-1 block text-muted">时（北京时间）</span>
+          <input
+            id="digest-hour"
+            type="number"
+            min={0}
+            max={23}
+            value={hour}
+            onChange={(event) => setHour(clamp(event.target.value, 23))}
+            className="min-h-11 w-full border border-line bg-ink px-3 text-bone sm:w-28"
+          />
+        </label>
+        <label className="text-sm" htmlFor="digest-minute">
+          <span className="mb-1 block text-muted">分</span>
+          <input
+            id="digest-minute"
+            type="number"
+            min={0}
+            max={59}
+            value={minute}
+            onChange={(event) => setMinute(clamp(event.target.value, 59))}
+            className="min-h-11 w-full border border-line bg-ink px-3 text-bone sm:w-28"
+          />
+        </label>
+      </div>
+      <div className="flex flex-col gap-2 text-sm">
+        <label className="flex min-h-11 items-center gap-2">
+          <input type="checkbox" checked={includeHome} onChange={(event) => setIncludeHome(event.target.checked)} />
+          首页当天故事
+        </label>
+        <label className="flex min-h-11 items-center gap-2">
+          <input type="checkbox" checked={includeKeywords} onChange={(event) => setIncludeKeywords(event.target.checked)} />
+          关键词命中
+        </label>
+        <label className="flex min-h-11 items-center gap-2">
+          <input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} />
+          每天推送
+        </label>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        <Button type="submit" disabled={busy}>
+          保存
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          disabled={busy}
+          onClick={() => {
+            if (sending.current) return;
+            sending.current = true;
+            save.mutate(payload, {
+              onSuccess: () => send.mutate(undefined, { onSettled: () => { sending.current = false; } }),
+              onError: () => { sending.current = false; },
+            });
+          }}
+        >
+          立即发送日报
+        </Button>
+      </div>
+      {save.isError && (
+        <p role="alert" className="text-sm text-accent-text">
+          {save.error.message}
+        </p>
+      )}
+      {send.isError && (
+        <p role="alert" className="text-sm text-accent-text">
+          {send.error.message}
+        </p>
+      )}
+      <p aria-live="polite" className="text-sm text-muted">
+        当前 {padTime(settings.hour)}:{padTime(settings.minute)}
+        {settings.enabled ? ' · 每天推送已打开' : ' · 每天推送未打开'}
+        {settings.lastSentOn ? ` · 定时已发 ${settings.lastSentOn}` : ''}
+        {statusText ? ` · ${statusText}` : ''}
+        {reason === 'sent' && count != null ? ` · ${count} 条` : ''}
+        {reason === 'failed' && httpStatus != null ? ` · HTTP ${httpStatus}` : ''}
+      </p>
+    </form>
+  );
+}
+
+function clamp(raw: string, max: number): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value)) return 0;
+  return Math.min(max, Math.max(0, value));
 }

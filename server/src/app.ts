@@ -1,4 +1,4 @@
-import type { CollectResponse, HealthResponse, SourcesResponse, StoriesResponse, WatchesResponse } from '@hot/shared';
+import type { CollectResponse, DigestResponse, DigestSendResponse, HealthResponse, SourcesResponse, StoriesResponse, WatchesResponse } from '@hot/shared';
 import express from 'express';
 import { z } from 'zod';
 import { aiEnvForNet, aiEnvFromProcess, readAiStatus } from './ai/score.ts';
@@ -8,18 +8,29 @@ import { listHomepage, listSourceStatus } from './collect/store.ts';
 import type { Net } from './collect/types.ts';
 import { integrationStatus } from './config.ts';
 import type { Db } from './db/index.ts';
+import { deliverDigest, readDigest, saveDigest } from './notify/digest.ts';
 import { createWatch, deleteWatch, listWatchState, setWatchPaused } from './notify/watch.ts';
 import { getRun, HEARTBEAT_JOB } from './scheduler.ts';
 
 const limitSchema = z.coerce.number().int().min(1).max(100);
 const keywordSchema = z.object({ keyword: z.string().trim().min(1).max(40) });
 const pauseSchema = z.object({ paused: z.boolean() });
+const digestSchema = z.object({
+  enabled: z.boolean(),
+  hour: z.number().int().min(0).max(23),
+  minute: z.number().int().min(0).max(59),
+  includeHome: z.boolean(),
+  includeKeywords: z.boolean(),
+});
 
 function routeId(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
-export function createApp(db: Db, opts: { heartbeatSec: number; collector?: Collector; net?: Net }) {
+export function createApp(
+  db: Db,
+  opts: { heartbeatSec: number; collector?: Collector; net?: Net; onDigestChange?: () => void },
+) {
   const app = express();
   app.disable('x-powered-by');
   app.use(express.json());
@@ -119,6 +130,43 @@ export function createApp(db: Db, opts: { heartbeatSec: number; collector?: Coll
       return;
     }
     res.json({ ok: true });
+  });
+
+  app.get('/api/v1/digest', (_req, res) => {
+    const body: DigestResponse = { ok: true, digest: readDigest(db, opts.net?.now() ?? new Date()) };
+    res.json(body);
+  });
+
+  app.put('/api/v1/digest', (req, res) => {
+    const parsed = digestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'bad_request' });
+      return;
+    }
+    const digest = saveDigest(db, parsed.data, opts.net?.now() ?? new Date());
+    opts.onDigestChange?.();
+    const body: DigestResponse = { ok: true, digest };
+    res.json(body);
+  });
+
+  app.post('/api/v1/digest/send', (_req, res) => {
+    const env = opts.net ? aiEnvForNet(opts.net) : aiEnvFromProcess(process.env);
+    void deliverDigest(db, {
+      now: opts.net?.now() ?? new Date(),
+      modelOpen: readAiStatus(db, env).enabled,
+      serverchanKey: opts.net ? opts.net.serverchanKey : process.env.SERVERCHAN_SENDKEY,
+      fetchImpl: opts.net?.fetch ?? globalThis.fetch,
+      mode: 'manual',
+    }).then(
+      (result) => {
+        if (res.headersSent) return;
+        const body: DigestSendResponse = { ok: true, ...result };
+        res.json(body);
+      },
+      () => {
+        if (!res.headersSent) res.status(500).json({ ok: false, error: 'send_failed' });
+      },
+    );
   });
 
   app.post('/api/v1/collect', (_req, res) => {

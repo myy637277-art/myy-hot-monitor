@@ -6,13 +6,14 @@ export function DigestPage() {
   return (
     <>
       <PageHeader code="03 DIGEST" title="定时日报">
-        按你设定的时间和范围，自动汇总成一份中文日报。
+        推送时间和范围在设置页。这一页的历史列表还没做。
       </PageHeader>
       <ComingSoon
         milestone="M5"
         title="情报员 回声 待命中"
         agent={<Agent id="echo" expression="default" />}
-        items={['日报配置：范围、推送时间、条数上限', '历史日报列表和详情', '通过站内和邮件发送']}
+        intro="推送时间和范围在设置页。这里还没做的是："
+        items={['历史日报列表和详情', '邮件发送']}
       />
     </>
   );

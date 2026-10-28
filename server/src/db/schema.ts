@@ -109,6 +109,19 @@ export const xAccountReputation = sqliteTable('x_account_reputation', {
   kind: text('kind').notNull(),
 });
 
+export const digestSchedule = sqliteTable('digest_schedule', {
+  id: text('id').primaryKey(),
+  enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),
+  hour: integer('hour').notNull(),
+  minute: integer('minute').notNull(),
+  includeHome: integer('include_home', { mode: 'boolean' }).notNull().default(true),
+  includeKeywords: integer('include_keywords', { mode: 'boolean' }).notNull().default(false),
+  lastSentOn: text('last_sent_on'),
+  lastStatus: text('last_status'),
+  lastHttpStatus: integer('last_http_status'),
+  updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
 export const watches = sqliteTable('watches', {
   id: text('id').primaryKey(),
   keyword: text('keyword').notNull(),
