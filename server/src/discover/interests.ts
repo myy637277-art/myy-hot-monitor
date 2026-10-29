@@ -1,0 +1,246 @@
+import { randomUUID } from 'node:crypto';
+import type { DiscoverStory, Interest } from '@hot/shared';
+import { desc, eq } from 'drizzle-orm';
+import { hasHan } from '../ai/formula.ts';
+import { HOME_WINDOW_MS, type HomeItem, type HomeRow } from '../collect/home.ts';
+import { loadHomeRows } from '../collect/store.ts';
+import type { Db } from '../db/index.ts';
+import { interests } from '../db/schema.ts';
+import { keywordHits } from '../notify/watch.ts';
+import { clipAliasMap } from './aliases.ts';
+
+const DIRECTION_CAP = 20;
+const TERM_CAP = 5;
+// shortcut: 30 cards, add paging if a domain regularly exceeds that
+const DISCOVER_CAP = 30;
+// shortcut: weibo_hot and bili_hot match the homepage block, update both if another hot list is added
+const BLOCKED = new Set(['weibo_hot', 'bili_hot']);
+// Fallback when a save did not store model aliases. Arbitrary terms get aliases from DeepSeek at save time.
+const RELATED: Record<string, readonly string[]> = {
+  大模型: ['language model', '语言模型'],
+  语言模型: ['language model', '大模型'],
+  'language model': ['大模型', '语言模型'],
+};
+
+type WriteResult = { ok: true; interest: Interest } | { ok: false; error: 'bad_request' | 'limit' | 'duplicate' | 'missing' };
+
+function cleanTerms(terms: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const term of terms) {
+    const trimmed = term.trim();
+    if (!trimmed || trimmed.length > 40) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (out.length === TERM_CAP) break;
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function readTerms(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return cleanTerms(parsed.filter((item): item is string => typeof item === 'string'));
+  } catch {
+    return [];
+  }
+}
+
+export interface Direction {
+  id: string;
+  label: string;
+  terms: string[];
+  aliases: Record<string, string[]>;
+}
+
+function readAliasMap(raw: string, terms: string[]): Record<string, string[]> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const bag: Record<string, string[]> = {};
+    for (const term of terms) {
+      const value = (parsed as Record<string, unknown>)[term];
+      if (Array.isArray(value)) bag[term] = value.filter((item): item is string => typeof item === 'string');
+    }
+    return clipAliasMap(bag, terms);
+  } catch {
+    return {};
+  }
+}
+
+function toInterest(row: typeof interests.$inferSelect): Interest {
+  return {
+    id: row.id,
+    label: row.label,
+    terms: readTerms(row.terms),
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function toDirection(row: typeof interests.$inferSelect): Direction {
+  const terms = readTerms(row.terms);
+  return { id: row.id, label: row.label, terms, aliases: readAliasMap(row.aliases, terms) };
+}
+
+export function listDirections(db: Db): Direction[] {
+  return db.select().from(interests).orderBy(desc(interests.createdAt)).all().map(toDirection);
+}
+
+export function listInterests(db: Db): Interest[] {
+  return db.select().from(interests).orderBy(desc(interests.createdAt)).all().map(toInterest);
+}
+
+export function peekInterest(db: Db, id: string): { terms: string[]; aliases: Record<string, string[]> } | null {
+  const row = db.select().from(interests).where(eq(interests.id, id)).get();
+  if (!row) return null;
+  const terms = readTerms(row.terms);
+  return { terms, aliases: readAliasMap(row.aliases, terms) };
+}
+
+export function createInterest(
+  db: Db,
+  label: string,
+  terms: string[],
+  now: Date,
+  aliases: Record<string, string[]> = {},
+): WriteResult {
+  const name = label.trim();
+  const cleaned = cleanTerms(terms);
+  if (!name || name.length > 40 || cleaned.length === 0) return { ok: false, error: 'bad_request' };
+  const rows = db.select().from(interests).all();
+  if (rows.length >= DIRECTION_CAP) return { ok: false, error: 'limit' };
+  if (rows.some((row) => row.label.toLowerCase() === name.toLowerCase())) return { ok: false, error: 'duplicate' };
+  const row = {
+    id: randomUUID(),
+    label: name,
+    terms: JSON.stringify(cleaned),
+    aliases: JSON.stringify(clipAliasMap(aliases, cleaned)),
+    createdAt: now,
+  };
+  db.insert(interests).values(row).run();
+  return { ok: true, interest: toInterest(row) };
+}
+
+export function updateInterest(
+  db: Db,
+  id: string,
+  label: string,
+  terms: string[],
+  aliases?: Record<string, string[]>,
+): WriteResult {
+  const name = label.trim();
+  const cleaned = cleanTerms(terms);
+  if (!name || name.length > 40 || cleaned.length === 0) return { ok: false, error: 'bad_request' };
+  const row = db.select().from(interests).where(eq(interests.id, id)).get();
+  if (!row) return { ok: false, error: 'missing' };
+  const taken = db
+    .select()
+    .from(interests)
+    .all()
+    .some((item) => item.id !== id && item.label.toLowerCase() === name.toLowerCase());
+  if (taken) return { ok: false, error: 'duplicate' };
+  const aliasJson = aliases ? JSON.stringify(clipAliasMap(aliases, cleaned)) : row.aliases;
+  db.update(interests).set({ label: name, terms: JSON.stringify(cleaned), aliases: aliasJson }).where(eq(interests.id, id)).run();
+  return { ok: true, interest: toInterest({ ...row, label: name, terms: JSON.stringify(cleaned), aliases: aliasJson }) };
+}
+
+export function deleteInterest(db: Db, id: string): boolean {
+  const row = db.select().from(interests).where(eq(interests.id, id)).get();
+  if (!row) return false;
+  db.delete(interests).where(eq(interests.id, id)).run();
+  return true;
+}
+
+/** Typed terms only. Aliases are for matching stories already collected, not extra search queries. */
+export function interestSearchTerms(db: Db): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const interest of listDirections(db)) {
+    for (const term of interest.terms) {
+      const key = term.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(term);
+    }
+  }
+  return out;
+}
+
+export function termsMatch(
+  terms: readonly string[],
+  title: string,
+  summaryZh: string | null,
+  extra = '',
+  aliases: Record<string, string[]> = {},
+): boolean {
+  for (const term of terms) {
+    if (keywordHits(term, title, summaryZh, extra)) return true;
+    const phrases = [...(aliases[term] ?? []), ...(RELATED[term.trim().toLowerCase()] ?? [])];
+    if (phrases.some((phrase) => keywordHits(phrase, title, summaryZh, extra))) return true;
+  }
+  return false;
+}
+
+function itemText(row: HomeRow, items: HomeItem[]): string {
+  return `${row.summary ?? ''}\n${items.map((item) => `${item.title}\n${item.summary ?? ''}`).join('\n')}`;
+}
+
+function toStory(row: HomeRow, items: HomeItem[], interestLabel: string): DiscoverStory {
+  const seen = new Set<string>();
+  const sources: DiscoverStory['sources'] = [];
+  let published = 0;
+  for (const item of items) {
+    const url = item.url && /^https?:\/\//i.test(item.url) ? item.url : null;
+    const key = url ?? `source:${item.sourceId}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      sources.push({
+        id: item.sourceId,
+        name: item.sourceName,
+        type: item.sourceType as DiscoverStory['sources'][number]['type'],
+        url,
+      });
+    }
+    published = Math.max(published, item.publishedAt?.getTime() ?? 0);
+  }
+  const eventTitle = row.eventTitle && hasHan(row.eventTitle) ? row.eventTitle.trim().slice(0, 80) : null;
+  return {
+    id: row.id,
+    title: row.title,
+    summary: row.summary,
+    summaryZh: row.summaryZh,
+    hotness: row.hotness,
+    credibility: row.credibility,
+    credibilityReason: row.credibilityReason,
+    aiMode: row.aiMode,
+    updatedAt: row.updatedAt.toISOString(),
+    publishedAt: published > 0 ? new Date(published).toISOString() : null,
+    eventTitle,
+    feedReason: row.feedReason,
+    unverified: row.aiMode !== 'model',
+    sources,
+    interestLabel,
+  };
+}
+
+export function listDiscoveries(db: Db, now: Date): DiscoverStory[] {
+  const active = listDirections(db);
+  if (active.length === 0) return [];
+  const cutoff = now.getTime() - HOME_WINDOW_MS;
+  const cards: Array<{ story: DiscoverStory; at: number }> = [];
+  for (const row of loadHomeRows(db)) {
+    const visible = row.items.filter((item) => !BLOCKED.has(item.sourceType));
+    const fresh = visible.filter((item) => item.publishedAt != null && item.publishedAt.getTime() >= cutoff);
+    if (fresh.length === 0) continue;
+    const extra = itemText(row, visible);
+    const hit = active.find((interest) => termsMatch(interest.terms, row.title, row.summaryZh, extra, interest.aliases));
+    if (!hit) continue;
+    const at = Math.max(...fresh.map((item) => item.publishedAt?.getTime() ?? 0));
+    cards.push({ story: toStory(row, fresh, hit.label), at });
+  }
+  cards.sort((a, b) => b.at - a.at);
+  return cards.slice(0, DISCOVER_CAP).map((card) => card.story);
+}

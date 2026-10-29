@@ -109,6 +109,14 @@ export const xAccountReputation = sqliteTable('x_account_reputation', {
   kind: text('kind').notNull(),
 });
 
+export const interests = sqliteTable('interests', {
+  id: text('id').primaryKey(),
+  label: text('label').notNull(),
+  terms: text('terms').notNull(),
+  aliases: text('aliases').notNull().default('{}'),
+  createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+});
+
 export const digestSchedule = sqliteTable('digest_schedule', {
   id: text('id').primaryKey(),
   enabled: integer('enabled', { mode: 'boolean' }).notNull().default(false),

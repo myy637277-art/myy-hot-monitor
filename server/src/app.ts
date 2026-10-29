@@ -1,4 +1,4 @@
-import type { CollectResponse, DigestResponse, DigestSendResponse, HealthResponse, SourcesResponse, StoriesResponse, WatchesResponse } from '@hot/shared';
+import type { CollectResponse, DigestResponse, DigestSendResponse, DiscoverResponse, HealthResponse, SourcesResponse, StoriesResponse, WatchesResponse } from '@hot/shared';
 import express from 'express';
 import { z } from 'zod';
 import { aiEnvForNet, aiEnvFromProcess, readAiStatus } from './ai/score.ts';
@@ -8,6 +8,8 @@ import { listHomepage, listSourceStatus } from './collect/store.ts';
 import type { Net } from './collect/types.ts';
 import { integrationStatus } from './config.ts';
 import type { Db } from './db/index.ts';
+import { aliasesForTerms } from './discover/aliases.ts';
+import { createInterest, deleteInterest, listDiscoveries, listInterests, peekInterest, updateInterest } from './discover/interests.ts';
 import { deliverDigest, readDigest, saveDigest } from './notify/digest.ts';
 import { createWatch, deleteWatch, listWatchState, setWatchPaused } from './notify/watch.ts';
 import { getRun, HEARTBEAT_JOB } from './scheduler.ts';
@@ -15,6 +17,10 @@ import { getRun, HEARTBEAT_JOB } from './scheduler.ts';
 const limitSchema = z.coerce.number().int().min(1).max(100);
 const keywordSchema = z.object({ keyword: z.string().trim().min(1).max(40) });
 const pauseSchema = z.object({ paused: z.boolean() });
+const interestSchema = z.object({
+  label: z.string().trim().min(1).max(40),
+  terms: z.array(z.string().trim().min(1).max(40)).min(1).max(5),
+});
 const digestSchema = z.object({
   enabled: z.boolean(),
   hour: z.number().int().min(0).max(23),
@@ -167,6 +173,64 @@ export function createApp(
         if (!res.headersSent) res.status(500).json({ ok: false, error: 'send_failed' });
       },
     );
+  });
+
+  app.get('/api/v1/discover', (_req, res) => {
+    const now = opts.net?.now() ?? new Date();
+    const body: DiscoverResponse = { ok: true, interests: listInterests(db), stories: listDiscoveries(db, now) };
+    res.json(body);
+  });
+
+  const aiEnv = () => (opts.net ? aiEnvForNet(opts.net) : aiEnvFromProcess(process.env));
+
+  app.post('/api/v1/discover', async (req, res) => {
+    const parsed = interestSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'bad_request' });
+      return;
+    }
+    const aliases = await aliasesForTerms(db, aiEnv(), parsed.data.terms);
+    const result = createInterest(db, parsed.data.label, parsed.data.terms, opts.net?.now() ?? new Date(), aliases);
+    if (!result.ok) {
+      res.status(result.error === 'duplicate' ? 409 : 400).json(result);
+      return;
+    }
+    res.status(201).json(result);
+  });
+
+  app.patch('/api/v1/discover/:id', async (req, res) => {
+    const parsed = interestSchema.safeParse(req.body);
+    const id = z.string().uuid().safeParse(routeId(req.params.id));
+    if (!parsed.success || !id.success) {
+      res.status(400).json({ ok: false, error: 'bad_request' });
+      return;
+    }
+    const current = peekInterest(db, id.data);
+    if (!current) {
+      res.status(404).json({ ok: false, error: 'not_found' });
+      return;
+    }
+    const sameTerms =
+      current.terms.length === parsed.data.terms.length &&
+      current.terms.every((term, index) => term.toLowerCase() === parsed.data.terms[index]?.toLowerCase());
+    const aliases = sameTerms ? current.aliases : await aliasesForTerms(db, aiEnv(), parsed.data.terms);
+    const result = updateInterest(db, id.data, parsed.data.label, parsed.data.terms, aliases);
+    if (!result.ok) {
+      res.status(result.error === 'missing' ? 404 : result.error === 'duplicate' ? 409 : 400).json(
+        result.error === 'missing' ? { ok: false, error: 'not_found' } : result,
+      );
+      return;
+    }
+    res.json(result);
+  });
+
+  app.delete('/api/v1/discover/:id', (req, res) => {
+    const id = z.string().uuid().safeParse(routeId(req.params.id));
+    if (!id.success || !deleteInterest(db, id.data)) {
+      res.status(404).json({ ok: false, error: 'not_found' });
+      return;
+    }
+    res.json({ ok: true });
   });
 
   app.post('/api/v1/collect', (_req, res) => {

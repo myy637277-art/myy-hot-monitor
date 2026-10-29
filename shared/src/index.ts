@@ -166,3 +166,20 @@ export interface DigestSendResponse {
   count: number;
   httpStatus: number | null;
 }
+
+export interface Interest {
+  id: string;
+  label: string;
+  terms: string[];
+  createdAt: string;
+}
+
+export interface DiscoverStory extends HotStory {
+  interestLabel: string;
+}
+
+export interface DiscoverResponse {
+  ok: true;
+  interests: Interest[];
+  stories: DiscoverStory[];
+}

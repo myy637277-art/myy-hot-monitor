@@ -3,6 +3,7 @@ import type {
   DigestResponse,
   DigestSendResponse,
   DigestSettings,
+  DiscoverResponse,
   SourcesResponse,
   SourceStatus,
   StoriesResponse,
@@ -31,6 +32,7 @@ export function useSources() {
     if (wasRunning.current && !busy) {
       void client.invalidateQueries({ queryKey: ['stories'] });
       void client.invalidateQueries({ queryKey: ['watches'] });
+      void client.invalidateQueries({ queryKey: ['discover'] });
     }
     wasRunning.current = busy;
   }, [sources.data?.running, sources.data?.ai.scoring, client]);
@@ -109,6 +111,62 @@ export function useDeleteWatch() {
   return useMutation({
     mutationFn: (id: string) => watchRequest(`/api/v1/watches/${id}`, { method: 'DELETE' }),
     onSuccess: () => client.invalidateQueries({ queryKey: ['watches'] }),
+  });
+}
+
+export function useDiscover() {
+  const sources = useSources();
+  return useQuery({
+    queryKey: ['discover'],
+    queryFn: () => getJson<DiscoverResponse>('/api/v1/discover'),
+    refetchInterval: sources.data?.running || sources.data?.ai.scoring ? 2000 : false,
+  });
+}
+
+async function interestRequest(url: string, init: RequestInit) {
+  const res = await fetch(url, init);
+  if (res.ok) return;
+  const body = (await res.json().catch(() => null)) as { error?: string } | null;
+  if (body?.error === 'duplicate') throw new Error('这个方向名称已经有了');
+  if (body?.error === 'limit') throw new Error('最多 20 个方向');
+  throw new Error('没有保存成功');
+}
+
+function interestBody(input: { label: string; terms: string[] }) {
+  return JSON.stringify({ label: input.label, terms: input.terms });
+}
+
+export function useAddInterest() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { label: string; terms: string[] }) =>
+      interestRequest('/api/v1/discover', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: interestBody(input),
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['discover'] }),
+  });
+}
+
+export function useUpdateInterest() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; label: string; terms: string[] }) =>
+      interestRequest(`/api/v1/discover/${input.id}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: interestBody(input),
+      }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['discover'] }),
+  });
+}
+
+export function useDeleteInterest() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => interestRequest(`/api/v1/discover/${id}`, { method: 'DELETE' }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['discover'] }),
   });
 }
 

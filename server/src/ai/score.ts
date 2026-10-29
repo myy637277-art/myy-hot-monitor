@@ -3,6 +3,7 @@ import { eq, inArray, sql } from 'drizzle-orm';
 import type { Net } from '../collect/types.ts';
 import type { Db } from '../db/index.ts';
 import { domainReputation, items, sources, stories, storyItems, watches, xAccountReputation } from '../db/schema.ts';
+import { listDirections, termsMatch } from '../discover/interests.ts';
 import { keywordHits } from '../notify/watch.ts';
 import {
   blendCredibility,
@@ -109,8 +110,9 @@ async function scoreNow(db: Db, env: AiEnv): Promise<void> {
     .where(eq(watches.paused, false))
     .all()
     .map((row) => row.keyword);
+  const directions = listDirections(db);
   const extras =
-    canCallModel(db, env) && keywords.length > 0
+    canCallModel(db, env) && (keywords.length > 0 || directions.length > 0)
       ? db
           .select()
           .from(stories)
@@ -163,8 +165,9 @@ async function scoreNow(db: Db, env: AiEnv): Promise<void> {
     }
     const extra = `${story.summary ?? ''}\n${snippetByStory.get(story.id) ?? ''}`;
     const keyword = keywords.some((keyword) => keywordHits(keyword, story.title, story.summaryZh, extra));
-    if (!freshIds.has(story.id) && !keyword) return [];
-    return [{ story, items: scored, relevant: locallyRelevant(scored), keyword }];
+    const interest = directions.some((direction) => termsMatch(direction.terms, story.title, story.summaryZh, extra, direction.aliases));
+    if (!freshIds.has(story.id) && !keyword && !interest) return [];
+    return [{ story, items: scored, relevant: locallyRelevant(scored), keyword, interest }];
   });
   if (prepared.length === 0) return;
 
@@ -172,7 +175,7 @@ async function scoreNow(db: Db, env: AiEnv): Promise<void> {
   const verdicts = new Map<string, { score: number; reason: string } | null>();
   const failures = new Map<string, AiFailure>();
   const failureStatus = new Map<string, number>();
-  const targets = prepared.filter((row) => row.relevant || row.keyword);
+  const targets = prepared.filter((row) => row.relevant || row.keyword || row.interest);
   const keyed = hasAiKey(env);
   let halted = false;
   let haltFailure: AiFailure | null = null;
@@ -225,7 +228,7 @@ async function scoreNow(db: Db, env: AiEnv): Promise<void> {
   for (const row of prepared) {
     const summaryHit = summaries.get(row.story.id);
     const fail = failures.get(row.story.id);
-    const needsModel = row.relevant || row.keyword;
+    const needsModel = row.relevant || row.keyword || row.interest;
     if (keyed && needsModel && !summaryHit && !fail) continue;
     const rule = credibilityRule(row.items);
     const verdict = verdicts.get(row.story.id);

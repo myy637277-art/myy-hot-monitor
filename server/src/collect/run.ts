@@ -4,6 +4,7 @@ import { judgeHomepage } from '../ai/judge.ts';
 import { aiEnvForNet, scoreStories } from '../ai/score.ts';
 import type { Db } from '../db/index.ts';
 import { watches } from '../db/schema.ts';
+import { interestSearchTerms } from '../discover/interests.ts';
 import { matchWatches } from '../notify/watch.ts';
 import { collectArxiv, collectBilibili, collectGithub, collectHn, collectRssFeed, collectTwitter, collectWeibo } from './adapters.ts';
 import { HOME_WINDOW_MS } from './home.ts';
@@ -97,6 +98,12 @@ export async function runCollect(
     const engine = keywordEngine(db, net);
     if (engine) await timed(engine.id, searchLimit, () => collectSearch(db, engine.engine, net, watch.keyword));
     if (net.twitterKey?.trim()) await timed('twitter', feedLimit, () => collectTwitter(db, net, watch.keyword, HOME_WINDOW_MS));
+  }
+
+  for (const term of interestSearchTerms(db)) {
+    const engine = keywordEngine(db, net);
+    if (engine) await timed(engine.id, searchLimit, () => collectSearch(db, engine.engine, net, term));
+    if (net.twitterKey?.trim()) await timed('twitter', feedLimit, () => collectTwitter(db, net, term, HOME_WINDOW_MS));
   }
 
   return { embedding, attempts };
