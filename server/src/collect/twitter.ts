@@ -11,7 +11,7 @@ export const X_MIN_FOLLOWERS = 100_000;
  * (Anthropic, Google / DeepMind, Hugging Face, NVIDIA, Microsoft, GitHub)
  * and DeepSeek, xAI, Meta AI.
  */
-const OFFICIAL_X_HANDLES = new Set([
+export const OFFICIAL_X_HANDLES = new Set([
   'openai',
   'openaidevs',
   'chatgptapp',
@@ -38,14 +38,22 @@ export function normalizeXHandle(handle: string | null | undefined): string | nu
 }
 
 export function isOfficialXHandle(handle: string | null | undefined): boolean {
+  return isKnownHandle(handle);
+}
+
+function isKnownHandle(handle: string | null | undefined, trusted?: ReadonlySet<string>): boolean {
   const name = normalizeXHandle(handle);
-  return name != null && OFFICIAL_X_HANDLES.has(name);
+  if (!name) return false;
+  return trusted ? trusted.has(name) : OFFICIAL_X_HANDLES.has(name);
 }
 
 /** Official account, or a non-official account with enough followers. Missing views drop everyone except official accounts. */
-export function keepXPost(post: { handle: string | null; followers: number | null; viewCount: number | null }): boolean {
+export function keepXPost(
+  post: { handle: string | null; followers: number | null; viewCount: number | null },
+  trusted?: ReadonlySet<string>,
+): boolean {
   if (post.viewCount != null && post.viewCount < X_MIN_VIEWS) return false;
-  const official = isOfficialXHandle(post.handle);
+  const official = isKnownHandle(post.handle, trusted);
   if (post.viewCount == null && !official) return false;
   if (official) return true;
   return post.followers != null && post.followers >= X_MIN_FOLLOWERS;
@@ -70,11 +78,15 @@ async function lookupFollowers(net: Net, userName: string): Promise<number | nul
 }
 
 /** Drop posts before they are stored. One user lookup per handle when the tweet payload has no follower count. */
-export async function selectXPosts(net: Net, posts: ParsedTweet[]): Promise<{ items: RawItem[]; lookups: number }> {
+export async function selectXPosts(
+  net: Net,
+  posts: ParsedTweet[],
+  trusted?: ReadonlySet<string>,
+): Promise<{ items: RawItem[]; lookups: number }> {
   const resolved = posts.map((post) => ({ ...post }));
   const missing = new Map<string, number[]>();
   resolved.forEach((post, index) => {
-    if (post.followers != null || isOfficialXHandle(post.handle)) return;
+    if (post.followers != null || isKnownHandle(post.handle, trusted)) return;
     if (post.viewCount == null || post.viewCount < X_MIN_VIEWS) return;
     const handle = normalizeXHandle(post.handle);
     if (!handle) return;
@@ -93,5 +105,5 @@ export async function selectXPosts(net: Net, posts: ParsedTweet[]): Promise<{ it
     }
   }
 
-  return { items: resolved.filter((post) => keepXPost(post)).map((post) => post.item), lookups };
+  return { items: resolved.filter((post) => keepXPost(post, trusted)).map((post) => post.item), lookups };
 }

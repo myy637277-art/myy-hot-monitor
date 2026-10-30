@@ -7,6 +7,7 @@ import type {
   SourcesResponse,
   SourceStatus,
   StoriesResponse,
+  TrustedResponse,
   WatchesResponse,
 } from '@hot/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -201,7 +202,67 @@ export function useSendDigest() {
       if (!res.ok) throw new Error('没有发送成功');
       return (await res.json()) as DigestSendResponse;
     },
-    onSuccess: () => client.invalidateQueries({ queryKey: ['digest'] }),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ['digest'] });
+    },
+  });
+}
+
+export function useSetSourceEnabled() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { id: string; enabled: boolean }) => {
+      const res = await fetch(`/api/v1/sources/${encodeURIComponent(input.id)}`, {
+        method: 'PATCH',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ enabled: input.enabled }),
+      });
+      if (!res.ok) throw new Error('没有保存成功');
+    },
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ['sources'] });
+    },
+  });
+}
+
+export function useTrusted() {
+  return useQuery({
+    queryKey: ['trusted'],
+    queryFn: () => getJson<TrustedResponse>('/api/v1/trusted'),
+  });
+}
+
+export function useAddTrusted() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (input: { kind: 'domain' | 'handle'; value: string }) => {
+      const res = await fetch('/api/v1/trusted', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+      if (res.ok) return;
+      const body = (await res.json().catch(() => null)) as { error?: string } | null;
+      if (body?.error === 'duplicate') throw new Error('这个来源已经在名单里');
+      if (body?.error === 'bad_value') throw new Error(input.kind === 'handle' ? '账号格式不对' : '域名格式不对');
+      throw new Error('没有保存成功');
+    },
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ['trusted'] });
+    },
+  });
+}
+
+export function useDeleteTrusted() {
+  const client = useQueryClient();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const res = await fetch(`/api/v1/trusted/${id}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('没有删除成功');
+    },
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ['trusted'] });
+    },
   });
 }
 

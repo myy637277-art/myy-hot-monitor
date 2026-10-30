@@ -13,8 +13,9 @@ function Logo({ withText = true }: { withText?: boolean }) {
       </svg>
       {withText && (
         <span className="leading-none">
-          <span className="block font-display text-lg font-bold tracking-wider uppercase">Hot Monitor</span>
-          <span className="block text-[11px] tracking-[0.3em] text-muted">热点监控</span>
+          <span className="block text-lg font-semibold tracking-tight text-bone">Hot Monitor</span>
+          <span aria-hidden="true" className="title-cut mt-1 w-6" />
+          <span className="mt-1 block text-[11px] text-muted">热点监控</span>
         </span>
       )}
     </span>
@@ -36,7 +37,7 @@ export function AppShell() {
         跳到主要内容
       </a>
 
-      <aside className="hud-stripes sticky top-0 hidden h-dvh flex-col border-r border-line bg-ink-2 sm:flex">
+      <aside className="sticky top-0 hidden h-dvh flex-col border-r border-line bg-ink-2 sm:flex">
         <NavLink to="/" aria-label="热点监控首页" className="flex h-20 items-center justify-center lg:justify-start lg:px-5">
           <span className="lg:hidden">
             <Logo withText={false} />
@@ -88,7 +89,7 @@ export function AppShell() {
           <StatusChip state={health} compact />
         </header>
 
-        <main id="main" tabIndex={-1} className="mx-auto w-full max-w-6xl flex-1 px-4 pt-6 pb-28 outline-none sm:px-8 sm:pt-10 sm:pb-12">
+        <main id="main" tabIndex={-1} className="w-full flex-1 px-4 pt-5 pb-28 outline-none sm:px-6 sm:pt-6 sm:pb-10">
           <Outlet context={health} />
         </main>
       </div>

@@ -1,5 +1,6 @@
 import { eq } from 'drizzle-orm';
 import { hasHan } from './formula.ts';
+import { loadTrust } from '../trust.ts';
 import { rowsToJudge, type HomeItem, type HomeRow } from '../collect/home.ts';
 import { loadHomeRows } from '../collect/store.ts';
 import type { Db } from '../db/index.ts';
@@ -16,7 +17,7 @@ export function judgeHomepage(db: Db, env: AiEnv): Promise<void> {
 
 async function judgeNow(db: Db, env: AiEnv): Promise<void> {
   if (!hasAiKey(env)) return;
-  const pending = rowsToJudge(loadHomeRows(db), env.now());
+  const pending = rowsToJudge(loadHomeRows(db), env.now(), loadTrust(db).domains);
   if (pending.length === 0) return;
   let halted = false;
   for (const batch of chunks(pending, BATCH)) {

@@ -34,6 +34,7 @@ export interface HomeRow {
   feedVerdict: string | null;
   feedReason: string | null;
   feedJudgedAt: Date | null;
+  feedBadge: string | null;
   items: HomeItem[];
 }
 
@@ -52,27 +53,27 @@ export function parseLooseDate(text: string, now: Date): Date | null {
 }
 
 /** Keyword hits keep a publish time inside the homepage window and an authority host. */
-export function filterKeywordHits(items: RawItem[], now: Date): RawItem[] {
+export function filterKeywordHits(items: RawItem[], now: Date, extraDomains: readonly string[] = []): RawItem[] {
   const cutoff = now.getTime() - HOME_WINDOW_MS;
   const kept: RawItem[] = [];
   for (const item of items) {
     const publishedAt = item.publishedAt ?? parseLooseDate(`${item.title}\n${item.summary ?? ''}`, now);
     if (!publishedAt || publishedAt.getTime() < cutoff) continue;
     const host = hostOf(item.url);
-    if (!host || !isAuthorityHost(host)) continue;
+    if (!host || !isAuthorityHost(host, extraDomains)) continue;
     kept.push({ ...item, publishedAt });
   }
   return kept;
 }
 
-export function visibleItems(items: HomeItem[], now: Date): HomeItem[] {
+export function visibleItems(items: HomeItem[], now: Date, extraDomains: readonly string[] = []): HomeItem[] {
   const cutoff = now.getTime() - HOME_WINDOW_MS;
   return items.filter((item) => {
     if (BLOCKED.has(item.sourceType)) return false;
     if (!item.publishedAt || item.publishedAt.getTime() < cutoff) return false;
     if (!SEARCH.has(item.sourceType)) return true;
     const host = item.url ? hostOf(item.url) : null;
-    return host != null && isAuthorityHost(host);
+    return host != null && isAuthorityHost(host, extraDomains);
   });
 }
 
@@ -84,10 +85,10 @@ export function passesHomeGate(items: HomeItem[]): boolean {
   return new Set(items.map((item) => item.sourceId)).size >= 2;
 }
 
-export function homepageCards(rows: HomeRow[], now: Date, modelOpen: boolean): HotStory[] {
+export function homepageCards(rows: HomeRow[], now: Date, modelOpen: boolean, extraDomains: readonly string[] = []): HotStory[] {
   const ready = rows.flatMap((row) => {
     if (row.relevant === false) return [];
-    const items = visibleItems(row.items, now);
+    const items = visibleItems(row.items, now, extraDomains);
     if (!passesHomeGate(items)) return [];
     return [{ row, items }];
   });
@@ -110,10 +111,10 @@ export function homepageCards(rows: HomeRow[], now: Date, modelOpen: boolean): H
 }
 
 /** Rows the model should judge: they pass the homepage gate and have no current verdict. */
-export function rowsToJudge(rows: HomeRow[], now: Date): Array<{ row: HomeRow; items: HomeItem[] }> {
+export function rowsToJudge(rows: HomeRow[], now: Date, extraDomains: readonly string[] = []): Array<{ row: HomeRow; items: HomeItem[] }> {
   return rows.flatMap((row) => {
     if (row.relevant === false) return [];
-    const items = visibleItems(row.items, now);
+    const items = visibleItems(row.items, now, extraDomains);
     if (!passesHomeGate(items)) return [];
     const judged = row.feedVerdict === 'reliable' || row.feedVerdict === 'uncertain' || row.feedVerdict === 'unreliable';
     if (judged && (!row.feedJudgedAt || row.updatedAt <= row.feedJudgedAt)) return [];
@@ -167,6 +168,7 @@ function toCard(row: HomeRow, items: HomeItem[], unverified: boolean): HotStory 
     eventTitle,
     feedReason: unverified ? null : row.feedReason,
     unverified,
+    feedBadge: row.feedBadge,
     sources,
   };
 }

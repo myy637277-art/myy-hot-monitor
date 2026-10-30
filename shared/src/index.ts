@@ -1,4 +1,4 @@
-export type IntegrationName = 'deepseek' | 'twitterapiIo' | 'smtp' | 'serverchan';
+export type IntegrationName = 'deepseek' | 'twitterapiIo' | 'serverchan';
 
 export type SourceType =
   | 'rss'
@@ -12,7 +12,7 @@ export type SourceType =
   | 'bili_hot'
   | 'twitter';
 
-export type SourceRunStatus = 'idle' | 'ok' | 'paused' | 'skipped' | 'error' | 'unconfigured';
+export type SourceRunStatus = 'idle' | 'ok' | 'paused' | 'skipped' | 'error' | 'unconfigured' | 'disabled';
 
 export interface EmbeddingNote {
   skipped: boolean;
@@ -40,6 +40,8 @@ export interface HotStory {
   feedReason: string | null;
   /** Shown when the model cannot be called and the story only passed the authority rules. */
   unverified: boolean;
+  /** Set after a collect when the story is new on the homepage or gained sources. */
+  feedBadge: string | null;
   sources: Array<{ id: string; name: string; type: SourceType; url: string | null }>;
 }
 
@@ -66,6 +68,7 @@ export interface SourceStatus {
   id: string;
   type: SourceType;
   name: string;
+  enabled: boolean;
   status: SourceRunStatus;
   statusText: string;
   pauseReason: string | null;
@@ -88,6 +91,10 @@ export interface SourcesResponse {
   embedding: EmbeddingNote;
   ai: AiStatus;
   progress: CollectProgress;
+  /** When the last collect finished. Null before the first one. */
+  lastCollectAt: string | null;
+  /** Set when that collect recorded a failure note. */
+  lastCollectNote: string | null;
   sources: SourceStatus[];
 }
 
@@ -116,6 +123,8 @@ export interface WatchNotification {
   channel: NotifyChannel;
   httpStatus: number | null;
   createdAt: string;
+  /** First http(s) source URL for this story. Null when none is stored. */
+  url: string | null;
 }
 
 export interface WatchesResponse {
@@ -155,9 +164,33 @@ export interface DigestSettings {
   lastHttpStatus: number | null;
 }
 
+export interface DigestLog {
+  id: string;
+  sentAt: string;
+  mode: 'scheduled' | 'manual';
+  reason: DigestReason;
+  count: number;
+  httpStatus: number | null;
+}
+
 export interface DigestResponse {
   ok: true;
   digest: DigestSettings;
+  logs: DigestLog[];
+}
+
+export type TrustKind = 'domain' | 'handle';
+
+export interface TrustedSource {
+  id: string;
+  kind: TrustKind;
+  value: string;
+  createdAt: string;
+}
+
+export interface TrustedResponse {
+  ok: true;
+  sources: TrustedSource[];
 }
 
 export interface DigestSendResponse {

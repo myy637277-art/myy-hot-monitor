@@ -7,7 +7,7 @@
 
 const HOUR = 60 * 60 * 1000;
 
-const OFFICIAL_DOMAINS = [
+export const OFFICIAL_DOMAINS = [
   'openai.com',
   'anthropic.com',
   'deepmind.google',
@@ -66,6 +66,22 @@ export interface CredibilityRule {
   reason: string;
 }
 
+export interface TrustList {
+  domains: string[];
+  handles: string[];
+}
+
+const EMPTY_TRUST: TrustList = { domains: [], handles: [] };
+
+function listedDomain(host: string, trust: TrustList): boolean {
+  return trust.domains.some((domain) => hostMatches(host, domain));
+}
+
+function listedHandle(handle: string, trust: TrustList): boolean {
+  const name = handle.replace(/^@/, '').toLowerCase();
+  return trust.handles.includes(name);
+}
+
 export function hotnessScore(input: HotnessInput, now: Date): number {
   const sources = new Set(input.items.map((item) => item.sourceId)).size;
   const cross = Math.min(40, Math.max(0, sources - 1) * 20);
@@ -80,20 +96,22 @@ export function hotnessScore(input: HotnessInput, now: Date): number {
   return clamp(cross + volume + hotList + fresh);
 }
 
-export function credibilityRule(items: ScoreItem[]): CredibilityRule {
+export function credibilityRule(items: ScoreItem[], trust: TrustList = EMPTY_TRUST): CredibilityRule {
   const hosts = items.map((item) => hostOf(item.url)).filter((host): host is string => Boolean(host));
   const handles = items.flatMap((item) => handlesOf(item.url));
   const text = items.map((item) => `${item.title}\n${item.summary ?? ''}`).join('\n');
-  const official = hosts.some((host) => OFFICIAL_DOMAINS.some((domain) => hostMatches(host, domain)));
-  const lookalike = hosts.some(isLookalikeHost) || handles.some(isLookalikeHandle);
+  const trusted = hosts.some((host) => listedDomain(host, trust)) || handles.some((handle) => listedHandle(handle, trust));
+  const lookalike =
+    hosts.some((host) => !listedDomain(host, trust) && isLookalikeHost(host)) ||
+    handles.some((handle) => !listedHandle(handle, trust) && isLookalikeHandle(handle));
   const blacklisted = hosts.some((host) => BLACKLIST_DOMAINS.some((domain) => hostMatches(host, domain)));
   const scam = SCAM.some((pattern) => pattern.test(text));
   const hardCap = lookalike || blacklisted || scam;
 
-  const domainPts = blacklisted || lookalike ? 0 : official ? 40 : hosts.some(isPress) ? 28 : 12;
+  const domainPts = blacklisted || lookalike ? 0 : trusted ? 40 : hosts.some(isPress) ? 28 : 12;
   const sourceCount = new Set(items.map((item) => item.sourceId)).size;
   const corroboration = sourceCount >= 3 ? 35 : sourceCount === 2 ? 20 : 0;
-  const officialBonus = official && !lookalike ? 15 : 0;
+  const officialBonus = trusted && !lookalike ? 15 : 0;
   const content = scam ? 0 : text.trim().length >= 8 ? 10 : 0;
   const score = hardCap ? Math.min(30, domainPts + corroboration + officialBonus + content) : clamp(domainPts + corroboration + officialBonus + content);
 
@@ -101,7 +119,7 @@ export function credibilityRule(items: ScoreItem[]): CredibilityRule {
   if (lookalike) bits.push('域名或账号仿冒官方');
   if (blacklisted) bits.push('命中域名黑名单');
   if (scam) bits.push('内容命中诈骗用语');
-  if (official && !lookalike) bits.push('包含官方域名');
+  if (trusted && !lookalike) bits.push('包含可信来源');
   else if (hosts.some(isPress)) bits.push('来自已知媒体域名');
   bits.push(sourceCount >= 2 ? `${sourceCount} 个来源相互印证` : '仅单一来源');
   return { score, hardCap, reason: bits.join('，') };
@@ -151,8 +169,9 @@ export function sourceStrength(host: string): number {
   return 0;
 }
 
-export function isAuthorityHost(host: string): boolean {
-  return sourceStrength(host) > 0;
+export function isAuthorityHost(host: string, extraDomains: readonly string[] = []): boolean {
+  if (sourceStrength(host) > 0) return true;
+  return extraDomains.some((domain) => host === domain || host.endsWith(`.${domain}`));
 }
 
 function isPress(host: string): boolean {

@@ -1,35 +1,30 @@
-import { useRef, useState } from 'react';
+import { useRef, useState, type FormEvent } from 'react';
 import { useOutletContext } from 'react-router';
-import type { DigestReason, DigestSettings, IntegrationName, SourceRunStatus } from '@hot/shared';
-import { Agent, agents, expressionLabels, type AgentId, type Expression } from '../components/agents/Agent.tsx';
+import type { DigestReason, DigestSettings, IntegrationName, SourceRunStatus, TrustKind } from '@hot/shared';
 import { Badge, type Tone } from '../components/ui/Badge.tsx';
 import { Button } from '../components/ui/Button.tsx';
 import { HudCard } from '../components/ui/HudCard.tsx';
-import { Meter } from '../components/ui/Meter.tsx';
 import { PageHeader } from '../components/ui/PageHeader.tsx';
-import { collectStatus, usageLabel, useCollect, useDigest, useSaveDigest, useSendDigest, useSources } from '../lib/feed.ts';
+import {
+  collectStatus,
+  usageLabel,
+  useAddTrusted,
+  useCollect,
+  useDeleteTrusted,
+  useDigest,
+  useSaveDigest,
+  useSendDigest,
+  useSetSourceEnabled,
+  useSources,
+  useTrusted,
+} from '../lib/feed.ts';
 import type { HealthState } from '../lib/useHealth.ts';
 
 const integrationLabels: Record<IntegrationName, string> = {
   deepseek: 'DeepSeek',
   twitterapiIo: 'twitterapi.io',
-  smtp: '邮件 SMTP',
   serverchan: 'Server酱',
 };
-
-// Contrast ratios measured against the card panel (#1F2731), the darkest common text background.
-const swatches = [
-  { name: 'ink', hex: '#0F1923', use: '背景' },
-  { name: 'panel', hex: '#1F2731', use: '卡片' },
-  { name: 'accent', hex: '#FF4655', use: '强调色块' },
-  { name: 'accent-text', hex: '#FF6170', use: '强调文字 · 5.2:1' },
-  { name: 'bone', hex: '#ECE8E1', use: '正文 · 12.4:1' },
-  { name: 'muted', hex: '#A9B0B6', use: '次要文字 · 6.9:1' },
-  { name: 'ok', hex: '#17E5C9', use: '可信 · 9.4:1' },
-  { name: 'warn', hex: '#F5B83D', use: '存疑 · 8.5:1' },
-];
-
-const expressions = Object.keys(expressionLabels) as Expression[];
 
 const sourceTone: Record<SourceRunStatus, Tone> = {
   ok: 'ok',
@@ -38,12 +33,14 @@ const sourceTone: Record<SourceRunStatus, Tone> = {
   error: 'danger',
   unconfigured: 'info',
   idle: 'info',
+  disabled: 'info',
 };
 
 export function SettingsPage() {
   const health = useOutletContext<HealthState>();
   const integrations = health.status === 'ok' || health.status === 'stale' ? health.health.integrations : null;
   const sources = useSources();
+  const toggleSource = useSetSourceEnabled();
   const collect = useCollect();
   const collecting = collect.isPending || Boolean(sources.data?.running);
   const status = collectStatus(Boolean(sources.data?.running), sources.data?.progress);
@@ -51,7 +48,7 @@ export function SettingsPage() {
   return (
     <>
       <PageHeader code="05 SETTINGS" title="设置">
-        各来源今天的状态和用量。日报的推送时间在下面。来源开关和信誉表会在后面的里程碑出现。
+        各来源今天的状态和用量。可以关掉某个来源。日报和可信来源在下面。
       </PageHeader>
 
       <HudCard
@@ -100,6 +97,13 @@ export function SettingsPage() {
                 <span className="flex flex-wrap items-center gap-2">
                   <Badge tone={sourceTone[source.status]}>{source.statusText}</Badge>
                   <span className="font-mono text-xs text-muted">{usageLabel(source)}</span>
+                  <Button
+                    variant="ghost"
+                    disabled={toggleSource.isPending}
+                    onClick={() => toggleSource.mutate({ id: source.id, enabled: !source.enabled })}
+                  >
+                    {source.enabled ? '关闭' : '开启'}
+                  </Button>
                 </span>
               </li>
             ))}
@@ -108,9 +112,9 @@ export function SettingsPage() {
       </HudCard>
 
       <DigestCard serverchan={integrations?.serverchan ?? null} />
+      <TrustCard />
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <HudCard code="KEYS" title="密钥配置">
+      <HudCard code="KEYS" title="密钥配置" className="mb-4">
           <p className="mb-3 text-sm text-muted">只显示是否已在 server/.env 中设置，不会显示具体值。</p>
           {integrations && (
             <p className="mb-3 text-sm text-muted">
@@ -134,71 +138,6 @@ export function SettingsPage() {
             ))}
           </ul>
         </HudCard>
-
-        <HudCard code="TOKENS" title="配色">
-          <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            {swatches.map((s) => (
-              <li key={s.name} className="flex items-center gap-2">
-                <span aria-hidden="true" className="size-8 shrink-0 border border-line-strong" style={{ background: s.hex }} />
-                <span className="min-w-0 text-xs leading-tight">
-                  <span className="block font-mono text-bone">{s.hex}</span>
-                  <span className="block text-muted">{s.use}</span>
-                </span>
-              </li>
-            ))}
-          </ul>
-        </HudCard>
-
-        <HudCard code="COMPONENTS" title="组件">
-          <div className="space-y-4">
-            <div className="flex flex-wrap gap-3">
-              <Button>主要按钮</Button>
-              <Button variant="ghost">次要按钮</Button>
-              <Button disabled>禁用</Button>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              <Badge tone="ok">可信</Badge>
-              <Badge tone="warn">存疑</Badge>
-              <Badge tone="danger">疑似虚假</Badge>
-              <Badge tone="info">仅规则判断</Badge>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <Meter label="热度" value={78} />
-              <Meter label="可信度" value={64} tone="ok" />
-            </div>
-          </div>
-        </HudCard>
-
-        <HudCard code="TYPE" title="字体">
-          <p className="font-display text-3xl font-bold tracking-wide uppercase">Hot Monitor 标题</p>
-          <p className="mt-2 text-sm">正文 Inter + 系统中文字体，确保中文显示清晰。</p>
-          <p className="mt-2 font-mono text-sm text-muted">MONO 0123456789 · 16:35:00</p>
-        </HudCard>
-      </div>
-
-      <HudCard code="AGENTS" title="原创角色 · 表情表" className="mt-4">
-        <p className="mb-4 text-sm text-muted">三位原创 Q 版特工，用于空状态、加载、成功和错误提示。不使用任何官方游戏角色或素材。</p>
-        <div className="space-y-6">
-          {(Object.keys(agents) as AgentId[]).map((id) => (
-            <section key={id} aria-labelledby={`agent-${id}`}>
-              <h3 id={`agent-${id}`} className="mb-2 font-display text-base font-semibold tracking-wider uppercase">
-                <span style={{ color: agents[id].accent }}>{agents[id].codename}</span> {agents[id].name}
-                <span className="ml-2 text-xs font-normal tracking-normal text-muted normal-case">
-                  {agents[id].role} · {agents[id].feature}
-                </span>
-              </h3>
-              <ul className="grid grid-cols-4 gap-2 sm:gap-4">
-                {expressions.map((e) => (
-                  <li key={e} className="border border-line bg-ink p-2 text-center">
-                    <Agent id={id} expression={e} />
-                    <span className="mt-1 block text-xs text-muted">{expressionLabels[e]}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
-        </div>
-      </HudCard>
     </>
   );
 }
@@ -220,7 +159,7 @@ function DigestCard({ serverchan }: { serverchan: boolean | null }) {
   return (
     <HudCard code="DIGEST" title="日报" className="mb-4">
       <p className="mb-3 text-sm text-muted">
-        默认 08:00（北京时间），只含首页当天的故事。打开「每天推送」后到点推一次。关键词命中要另外勾选。没有内容不会发送。
+        默认 08:00（北京时间）。打开「每天推送」后，到点先采集，采完再推一次。关键词命中要另外勾选。没有内容不会发送。
       </p>
       {serverchan === false && <p className="mb-3 text-sm text-muted">未配置 Server酱，日报只会记结果，不会推到微信。</p>}
       {digest.isPending && <p className="text-sm text-muted">正在读取日报设置…</p>}
@@ -344,4 +283,78 @@ function clamp(raw: string, max: number): number {
   const value = Number(raw);
   if (!Number.isInteger(value)) return 0;
   return Math.min(max, Math.max(0, value));
+}
+
+function TrustCard() {
+  const trusted = useTrusted();
+  const add = useAddTrusted();
+  const remove = useDeleteTrusted();
+  const [kind, setKind] = useState<TrustKind>('handle');
+  const [value, setValue] = useState('');
+  const sources = trusted.data?.sources ?? [];
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!value.trim()) return;
+    add.mutate({ kind, value }, { onSuccess: () => setValue('') });
+  };
+
+  return (
+    <HudCard code="TRUST" title="可信来源" className="mb-4">
+      <p className="mb-3 text-sm text-muted">
+        名单里的域名和 X 账号更可信，也不会被当成仿冒。没点名的 X 仍要至少 10 万粉丝、浏览量至少 1000 才入库，可信度更低。
+      </p>
+      {trusted.isPending && <p className="text-sm text-muted">正在读取可信来源…</p>}
+      {trusted.isError && (
+        <p role="alert" className="mb-3 text-sm text-accent-text">
+          可信来源加载失败。确认后端已启动后再试。
+        </p>
+      )}
+      <form onSubmit={submit} className="flex flex-col gap-3 sm:flex-row">
+        <label className="text-sm">
+          <span className="mb-1 block text-muted">类型</span>
+          <select
+            value={kind}
+            onChange={(event) => setKind(event.target.value === 'domain' ? 'domain' : 'handle')}
+            className="min-h-11 border border-line bg-ink px-3 text-bone"
+          >
+            <option value="handle">X 账号</option>
+            <option value="domain">域名</option>
+          </select>
+        </label>
+        <label className="min-w-0 flex-1 text-sm">
+          <span className="mb-1 block text-muted">{kind === 'handle' ? '账号' : '域名'}</span>
+          <input
+            value={value}
+            maxLength={80}
+            onChange={(event) => setValue(event.target.value)}
+            className="min-h-11 w-full border border-line bg-ink px-3 text-bone"
+          />
+        </label>
+        <Button type="submit" className="sm:self-end" disabled={add.isPending || !value.trim()}>
+          添加
+        </Button>
+      </form>
+      {add.isError && (
+        <p role="alert" className="mt-3 text-sm text-accent-text">
+          {add.error.message}
+        </p>
+      )}
+      {sources.length > 0 && (
+        <ul className="mt-4 space-y-2">
+          {sources.map((source) => (
+            <li key={source.id} className="flex flex-col gap-2 border border-line px-3 py-2 sm:flex-row sm:items-center sm:justify-between">
+              <span className="flex min-w-0 flex-wrap items-center gap-2">
+                <Badge tone="info">{source.kind === 'handle' ? 'X' : '域名'}</Badge>
+                <span className="font-medium">{source.kind === 'handle' ? `@${source.value}` : source.value}</span>
+              </span>
+              <Button variant="ghost" disabled={remove.isPending} onClick={() => remove.mutate(source.id)}>
+                删除
+              </Button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </HudCard>
+  );
 }

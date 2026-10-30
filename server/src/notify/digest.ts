@@ -1,11 +1,13 @@
-import type { DigestReason, DigestSettings } from '@hot/shared';
+import type { DigestLog, DigestReason, DigestSettings } from '@hot/shared';
+import { randomUUID } from 'node:crypto';
 import { and, desc, eq, gte, inArray, lt } from 'drizzle-orm';
 import { hasHan } from '../ai/formula.ts';
 import { homepageCards } from '../collect/home.ts';
 import { loadHomeRows } from '../collect/store.ts';
 import { addDays, shanghaiDate } from '../collect/time.ts';
 import type { Db } from '../db/index.ts';
-import { digestSchedule, items, notifications, stories, storyItems } from '../db/schema.ts';
+import { digestLog, digestSchedule, items, notifications, stories, storyItems } from '../db/schema.ts';
+import { loadTrust } from '../trust.ts';
 import { postServerchan } from './serverchan.ts';
 
 const DIGEST_ID = 'default';
@@ -103,7 +105,8 @@ function dayWindow(day: string): { start: Date; end: Date } {
 }
 
 function homeLines(db: Db, now: Date, day: string, modelOpen: boolean, room: number): DigestLine[] {
-  const cards = homepageCards(loadHomeRows(db), now, modelOpen).filter(
+  const domains = loadTrust(db).domains;
+  const cards = homepageCards(loadHomeRows(db), now, modelOpen, domains).filter(
     (card) => card.publishedAt != null && shanghaiDate(new Date(card.publishedAt)) === day,
   );
   return cards.slice(0, room).map((card) => ({
@@ -205,7 +208,9 @@ export async function deliverDigest(
   const day = shanghaiDate(opts.now);
   if (opts.mode === 'scheduled' && (!settings.enabled || settings.lastSentOn === day)) {
     console.info('[digest] scheduled skipped count=0');
-    return { reason: 'skipped', count: 0, httpStatus: null };
+    const skipped = { reason: 'skipped' as const, count: 0, httpStatus: null };
+    writeDigestLog(db, opts, skipped);
+    return skipped;
   }
   const lines = buildDigest(db, opts.now, settings, opts.modelOpen);
   if (lines.length === 0) {
@@ -241,7 +246,44 @@ function finish(
     })
     .where(eq(digestSchedule.id, DIGEST_ID))
     .run();
+  writeDigestLog(db, opts, result);
   const http = result.httpStatus == null ? '' : ` http=${result.httpStatus}`;
   console.info(`[digest] ${opts.mode} ${result.reason} count=${result.count}${http}`);
   return result;
+}
+
+export function listDigestLogs(db: Db): DigestLog[] {
+  return db
+    .select()
+    .from(digestLog)
+    .orderBy(desc(digestLog.sentAt))
+    .limit(30)
+    .all()
+    .map((row) => ({
+      id: row.id,
+      sentAt: row.sentAt.toISOString(),
+      mode: row.mode === 'manual' ? 'manual' : 'scheduled',
+      reason: REASONS.has(row.reason as DigestReason) ? (row.reason as DigestReason) : 'failed',
+      count: row.count,
+      httpStatus: row.httpStatus,
+    }));
+}
+
+function writeDigestLog(
+  db: Db,
+  opts: DeliverOpts,
+  result: { reason: DigestReason; count: number; httpStatus: number | null },
+): void {
+  db.insert(digestLog)
+    .values({
+      id: randomUUID(),
+      sentAt: opts.now,
+      mode: opts.mode,
+      reason: result.reason,
+      count: result.count,
+      httpStatus: result.httpStatus,
+    })
+    .run();
+  const extra = db.select({ id: digestLog.id }).from(digestLog).orderBy(desc(digestLog.sentAt)).all().slice(30);
+  if (extra.length > 0) db.delete(digestLog).where(inArray(digestLog.id, extra.map((row) => row.id))).run();
 }

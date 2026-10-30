@@ -3,25 +3,62 @@ import { Agent } from '../components/agents/Agent.tsx';
 import { httpUrl, StorySourceLink, StoryTitleLink } from '../components/story-link.tsx';
 import { Badge } from '../components/ui/Badge.tsx';
 import { Button } from '../components/ui/Button.tsx';
-import { ComingSoon } from '../components/ui/ComingSoon.tsx';
 import { HudCard } from '../components/ui/HudCard.tsx';
 import { PageHeader } from '../components/ui/PageHeader.tsx';
-import { useAddInterest, useDeleteInterest, useDiscover, useUpdateInterest } from '../lib/feed.ts';
+import { useAddInterest, useDeleteInterest, useDigest, useDiscover, useUpdateInterest } from '../lib/feed.ts';
+import { fmtDateTime } from '../lib/useHealth.ts';
+import type { DigestLog, DigestReason } from '@hot/shared';
+
+const digestLogStatus: Record<DigestReason, string> = {
+  sent: '已推送到微信',
+  empty: '没有内容，未发送',
+  unconfigured: '未配置 Server酱，未发送',
+  failed: '推送失败',
+  skipped: '今天的定时日报已经发过',
+};
 
 export function DigestPage() {
+  const digest = useDigest();
+  const logs = digest.data?.logs ?? [];
   return (
     <>
       <PageHeader code="03 DIGEST" title="定时日报">
-        推送时间和范围在设置页。这一页的历史列表还没做。
+        推送时间和范围在设置页。这里是最近 30 次发送记录，不含正文。
       </PageHeader>
-      <ComingSoon
-        milestone="M5"
-        title="情报员 回声 待命中"
-        agent={<Agent id="echo" expression="default" />}
-        intro="推送时间和范围在设置页。这里还没做的是："
-        items={['历史日报列表和详情', '邮件发送']}
-      />
+      <HudCard code="LOG" title="发送记录">
+        {digest.isPending && <p className="text-sm text-muted">正在读取发送记录…</p>}
+        {digest.isError && (
+          <p role="alert" className="text-sm text-accent-text">
+            发送记录加载失败。确认后端已启动后再试。
+          </p>
+        )}
+        {digest.data && logs.length === 0 && <p className="text-sm text-muted">还没有发送记录。</p>}
+        {logs.length > 0 && (
+          <ul className="space-y-2">
+            {logs.map((log) => (
+              <DigestLogRow key={log.id} log={log} />
+            ))}
+          </ul>
+        )}
+      </HudCard>
     </>
+  );
+}
+
+function DigestLogRow({ log }: { log: DigestLog }) {
+  const http = log.reason === 'failed' && log.httpStatus != null ? ` · HTTP ${log.httpStatus}` : '';
+  return (
+    <li className="border border-line px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="font-medium">{digestLogStatus[log.reason]}</span>
+        <Badge tone="info">{log.mode === 'manual' ? '手动' : '定时'}</Badge>
+        <Badge tone={log.reason === 'failed' ? 'warn' : 'info'}>{`${log.count} 条`}</Badge>
+      </div>
+      <p className="mt-1 font-mono text-xs text-muted">
+        {fmtDateTime(log.sentAt)}
+        {http}
+      </p>
+    </li>
   );
 }
 
@@ -113,8 +150,8 @@ export function DiscoverPage() {
           {full && <p className="text-sm text-muted">最多 20 个方向。</p>}
         </form>
         {discover.data && directions.length === 0 && (
-          <div className="mt-4 flex flex-col items-center gap-3 sm:flex-row sm:items-start">
-            <div className="w-28 shrink-0">
+          <div className="mt-4 flex items-center gap-3">
+            <div className="w-12 shrink-0">
               <Agent id="blaze" expression="smug" />
             </div>
             <p className="text-sm text-muted">还没有方向。写一个名称和搜索词，再到首页点「立即采集」。</p>
@@ -159,13 +196,16 @@ export function DiscoverPage() {
         </HudCard>
       )}
       {stories.length > 0 && (
-        <ul className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {stories.map((story) => {
-            const href = story.sources.map((source) => httpUrl(source.url)).find((url) => url != null) ?? null;
-            const headline = story.eventTitle ?? story.title;
-            return (
-              <li key={story.id}>
-                <HudCard as="article" className="h-full" bodyClassName="flex flex-col gap-3">
+        <section>
+          <h2 className="mb-3 text-base font-semibold">对上的故事</h2>
+          <ul className="space-y-3">
+            {stories.map((story) => {
+              const href = story.sources.map((source) => httpUrl(source.url)).find((url) => url != null) ?? null;
+              const headline = story.eventTitle ?? story.title;
+              return (
+                <li key={story.id} className="story-card">
+                  <div className="story-card-body relative flex flex-col gap-3 p-4 sm:p-5">
+                    <span aria-hidden="true" className="absolute top-0 left-0 h-0.5 w-8 bg-accent" />
                   <div className="flex flex-wrap gap-2">
                     <Badge tone="info">{story.interestLabel}</Badge>
                     {story.sources.map((source) => (
@@ -174,17 +214,18 @@ export function DiscoverPage() {
                       </StorySourceLink>
                     ))}
                   </div>
-                  <h3 className="leading-snug font-semibold">
+                  <h3 className="mt-2 leading-snug font-semibold">
                     <StoryTitleLink title={headline} href={href} />
                   </h3>
                   {(story.summaryZh || story.summary) && (
-                    <p className="text-sm leading-relaxed text-muted">{story.summaryZh ?? story.summary}</p>
+                    <p className="mt-1 text-sm leading-relaxed text-muted">{story.summaryZh ?? story.summary}</p>
                   )}
-                </HudCard>
-              </li>
-            );
-          })}
-        </ul>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
       )}
     </>
   );
@@ -194,7 +235,7 @@ export function NotFoundPage() {
   return (
     <>
       <PageHeader code="404" title="页面不存在" />
-      <div className="mx-auto w-40">
+      <div className="w-14">
         <Agent id="lynx" expression="down" />
       </div>
     </>

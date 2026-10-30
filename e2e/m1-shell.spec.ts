@@ -48,12 +48,9 @@ test('settings shows all 3 original agents with 4 expressions each', async ({ pa
 
 test.describe('reduced motion', () => {
   test.use({ reducedMotion: 'reduce' });
-  test('radar sweep does not keep animating', async ({ page }) => {
+  test('hot feed has no radar sweep', async ({ page }) => {
     await page.goto('/');
-    const sweep = page.getByTestId('radar-sweep');
-    await expect(sweep).toBeVisible();
-    const iterations = await sweep.evaluate((el) => getComputedStyle(el).animationIterationCount);
-    expect(iterations).toBe('1');
+    await expect(page.getByTestId('radar-sweep')).toHaveCount(0);
   });
 });
 

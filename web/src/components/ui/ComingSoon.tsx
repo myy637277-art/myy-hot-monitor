@@ -18,8 +18,8 @@ export function ComingSoon({
 }) {
   return (
     <HudCard code={`STANDBY · ${milestone}`} title={title}>
-      <div className="flex flex-col items-center gap-5 sm:flex-row sm:items-start">
-        <div className="w-32 shrink-0 sm:w-36">{agent}</div>
+      <div className="flex items-start gap-3">
+        <div className="w-14 shrink-0">{agent}</div>
         <div className="min-w-0">
           <p className="text-sm text-muted">{intro ?? `这个模块会在 ${milestone} 上线，届时这里会有：`}</p>
           <ul className="mt-3 space-y-2 text-sm">

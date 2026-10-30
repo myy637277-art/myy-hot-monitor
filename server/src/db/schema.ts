@@ -53,6 +53,10 @@ export const stories = sqliteTable(
     feedVerdict: text('feed_verdict'),
     feedReason: text('feed_reason'),
     feedJudgedAt: integer('feed_judged_at', { mode: 'timestamp_ms' }),
+    /** Visible homepage source count after the last collect that listed this story. */
+    homeSourceCount: integer('home_source_count'),
+    /** Shown until the next collect: 新上榜, or 多了 N 个来源. */
+    feedBadge: text('feed_badge'),
     createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
     updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
   },
@@ -129,6 +133,26 @@ export const digestSchedule = sqliteTable('digest_schedule', {
   lastHttpStatus: integer('last_http_status'),
   updatedAt: integer('updated_at', { mode: 'timestamp_ms' }).notNull(),
 });
+
+export const digestLog = sqliteTable('digest_log', {
+  id: text('id').primaryKey(),
+  sentAt: integer('sent_at', { mode: 'timestamp_ms' }).notNull(),
+  mode: text('mode').notNull(),
+  reason: text('reason').notNull(),
+  count: integer('count').notNull(),
+  httpStatus: integer('http_status'),
+});
+
+export const trustedSources = sqliteTable(
+  'trusted_sources',
+  {
+    id: text('id').primaryKey(),
+    kind: text('kind').notNull(),
+    value: text('value').notNull(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' }).notNull(),
+  },
+  (t) => [uniqueIndex('trusted_sources_kind_value').on(t.kind, t.value)],
+);
 
 export const watches = sqliteTable('watches', {
   id: text('id').primaryKey(),

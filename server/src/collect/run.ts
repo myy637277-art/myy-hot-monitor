@@ -1,18 +1,19 @@
 import type { CollectProgress, EmbeddingNote } from '@hot/shared';
 import { eq } from 'drizzle-orm';
 import { judgeHomepage } from '../ai/judge.ts';
-import { aiEnvForNet, scoreStories } from '../ai/score.ts';
+import { aiEnvForNet, readAiStatus, scoreStories } from '../ai/score.ts';
 import type { Db } from '../db/index.ts';
-import { watches } from '../db/schema.ts';
+import { sources, watches } from '../db/schema.ts';
 import { interestSearchTerms } from '../discover/interests.ts';
 import { matchWatches } from '../notify/watch.ts';
+import { recordRun } from '../scheduler.ts';
 import { collectArxiv, collectBilibili, collectGithub, collectHn, collectRssFeed, collectTwitter, collectWeibo } from './adapters.ts';
 import { HOME_WINDOW_MS } from './home.ts';
 import { buildCatalog, DEFAULT_SEARCH_QUERY, RSS_FEEDS, SEARCH_ENGINES } from './catalog.ts';
 import { embeddingLayerStatus } from './embed.ts';
 import { crawlerUa } from './http.ts';
 import { collectSearch } from './search.ts';
-import { activePause, ensureSources, getSearchUsed, recordAttempt } from './store.ts';
+import { activePause, ensureSources, getSearchUsed, markHomeBadges, recordAttempt } from './store.ts';
 import { shanghaiDate } from './time.ts';
 import { failedAttempt, type Attempt, type Net } from './types.ts';
 
@@ -49,6 +50,7 @@ export async function runCollect(
   onProgress?: (progress: CollectProgress) => void,
 ): Promise<CollectReport> {
   ensureSources(db, caps);
+  const enabled = new Set(db.select().from(sources).all().filter((row) => row.enabled).map((row) => row.id));
   const embedding = embeddingLayerStatus();
   const useEmbedding = !embedding.skipped;
   const attempts: Attempt[] = [];
@@ -78,42 +80,49 @@ export async function runCollect(
   };
 
   const feedLimit = net.feedTimeoutMs + 500;
-  await Promise.all([
-    timed('weibo_hot', feedLimit, () => collectWeibo(net)),
-    timed('bili_hot', feedLimit, () => collectBilibili(net)),
-    timed('hn', net.hnTimeoutMs + 500, () => collectHn(net)),
-    timed('github', feedLimit, () => collectGithub(net)),
-    timed('arxiv', feedLimit, () => collectArxiv(net)),
-    timed('twitter', feedLimit, () => collectTwitter(db, net)),
-    ...RSS_FEEDS.map((feed) => timed(feed.id, feedLimit, () => collectRssFeed(net, feed))),
-  ]);
+  const feeds: Array<[string, number, () => Promise<Attempt>]> = [
+    ['weibo_hot', feedLimit, () => collectWeibo(net)],
+    ['bili_hot', feedLimit, () => collectBilibili(net)],
+    ['hn', net.hnTimeoutMs + 500, () => collectHn(net)],
+    ['github', feedLimit, () => collectGithub(net)],
+    ['arxiv', feedLimit, () => collectArxiv(net)],
+    ['twitter', feedLimit, () => collectTwitter(db, net)],
+    ...RSS_FEEDS.map((feed) => [feed.id, feedLimit, () => collectRssFeed(net, feed)] as [string, number, () => Promise<Attempt>]),
+  ];
+  await Promise.all(feeds.filter(([id]) => enabled.has(id)).map(([id, ms, work]) => timed(id, ms, work)));
 
   const searchLimit = net.minGapMs + 30_000 + net.searchTimeoutMs + 5_000;
   for (const engine of SEARCH_ENGINES) {
+    if (!enabled.has(engine.id)) continue;
     await timed(engine.id, searchLimit, () => collectSearch(db, engine.engine, net));
   }
 
   const keywords = db.select().from(watches).where(eq(watches.paused, false)).all();
   for (const watch of keywords) {
-    const engine = keywordEngine(db, net);
+    const engine = keywordEngine(db, net, enabled);
     if (engine) await timed(engine.id, searchLimit, () => collectSearch(db, engine.engine, net, watch.keyword));
-    if (net.twitterKey?.trim()) await timed('twitter', feedLimit, () => collectTwitter(db, net, watch.keyword, HOME_WINDOW_MS));
+    if (enabled.has('twitter') && net.twitterKey?.trim()) {
+      await timed('twitter', feedLimit, () => collectTwitter(db, net, watch.keyword, HOME_WINDOW_MS));
+    }
   }
 
   for (const term of interestSearchTerms(db)) {
-    const engine = keywordEngine(db, net);
+    const engine = keywordEngine(db, net, enabled);
     if (engine) await timed(engine.id, searchLimit, () => collectSearch(db, engine.engine, net, term));
-    if (net.twitterKey?.trim()) await timed('twitter', feedLimit, () => collectTwitter(db, net, term, HOME_WINDOW_MS));
+    if (enabled.has('twitter') && net.twitterKey?.trim()) {
+      await timed('twitter', feedLimit, () => collectTwitter(db, net, term, HOME_WINDOW_MS));
+    }
   }
 
   return { embedding, attempts };
 }
 
-function keywordEngine(db: Db, net: Net) {
+function keywordEngine(db: Db, net: Net, enabled: Set<string>) {
   const now = net.now();
   const day = shanghaiDate(now);
   for (const engine of SEARCH_ENGINES) {
     if (engine.engine === 'google') continue;
+    if (!enabled.has(engine.id)) continue;
     if (activePause(db, engine.id, now)) continue;
     if (getSearchUsed(db, engine.id, day) >= net.searchDailyCap) continue;
     return engine;
@@ -125,6 +134,8 @@ export interface Collector {
   start: () => { started: boolean };
   running: () => boolean;
   progress: () => CollectProgress;
+  /** Resolves when the current collect finishes. Resolves immediately when none is running. */
+  finished: () => Promise<void>;
 }
 
 export function createCollector(db: Db, net: Net, caps: { search: number; twitter: number }): Collector {
@@ -137,6 +148,7 @@ export function createCollector(db: Db, net: Net, caps: { search: number; twitte
     start() {
       if (current) return { started: false };
       progress = emptyProgress();
+      let note: string | null = null;
       current = runCollect(db, net, caps, (next) => {
         progress = next;
       })
@@ -144,15 +156,20 @@ export function createCollector(db: Db, net: Net, caps: { search: number; twitte
           show('中文摘要');
           await scoreStories(db, aiEnvForNet(net));
           await judgeHomepage(db, aiEnvForNet(net));
+          markHomeBadges(db, net.now(), readAiStatus(db, aiEnvForNet(net)).enabled);
           show('关键词匹配');
           await matchWatches(db, { now: net.now(), serverchanKey: net.serverchanKey, fetchImpl: net.fetch });
+          const failed = report.attempts.filter((attempt) => attempt.status === 'error').length;
+          note = failed > 0 ? `失败 ${failed} 个来源` : null;
           return report;
         })
         .catch((err) => {
-          console.error('[collect] failed', err instanceof Error ? err.message : 'failed');
+          note = err instanceof Error ? err.message : '采集失败';
+          console.error('[collect] failed', note);
           return { embedding: embeddingLayerStatus(), attempts: [] };
         })
         .finally(() => {
+          recordRun(db, 'collect', net.now(), note);
           current = null;
           progress = emptyProgress();
         });
@@ -160,6 +177,7 @@ export function createCollector(db: Db, net: Net, caps: { search: number; twitte
     },
     running: () => current !== null,
     progress: () => progress,
+    finished: () => (current ? current.then(() => undefined, () => undefined) : Promise.resolve()),
   };
 }
 

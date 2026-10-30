@@ -3,6 +3,7 @@ import { RSS_FEEDS } from './catalog.ts';
 import { fetchUrl, isTimeout, isVerification } from './http.ts';
 import { parseBilibili, parseFeed, parseGithub, parseHnItem, parseHnTop, parseTweets, parseWeibo } from './parse.ts';
 import { selectXPosts } from './twitter.ts';
+import { loadTrust } from '../trust.ts';
 import { activePause, getUsage } from './store.ts';
 import { nextShanghaiMidnight, shanghaiDate } from './time.ts';
 import { failedAttempt, okAttempt, type Attempt, type Net, type RawItem } from './types.ts';
@@ -181,7 +182,8 @@ export async function collectTwitter(db: Db, net: Net, query = 'AI', windowMs = 
     if (!res.ok) return failedAttempt('twitter', 'error', `HTTP ${res.status}`, { requests: 1 });
     const cutoff = net.now().getTime() - windowMs;
     const drafts = parseTweets(res.body).filter((draft) => draft.item.publishedAt != null && draft.item.publishedAt.getTime() >= cutoff);
-    const selected = await selectXPosts(net, drafts);
+    const trusted = new Set(loadTrust(db).handles);
+    const selected = await selectXPosts(net, drafts, trusted);
     return {
       ...okAttempt('twitter', selected.items),
       requests: 1 + selected.lookups,

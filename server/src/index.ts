@@ -10,18 +10,21 @@ import { startScheduler } from './scheduler.ts';
 loadEnvFile();
 const config = readConfig();
 const { db, close } = openDb(config.dbFile);
+const net = netFromEnv(process.env);
+const collector = createCollector(db, net, capsFromNet(net));
 const scheduler = startScheduler(db, config.heartbeatSec, {
-  run: () =>
-    deliverDigest(db, {
+  run: async () => {
+    if (!collector.running()) collector.start();
+    await collector.finished();
+    await deliverDigest(db, {
       now: new Date(),
       modelOpen: readAiStatus(db, aiEnvFromProcess(process.env)).enabled,
       serverchanKey: process.env.SERVERCHAN_SENDKEY,
       fetchImpl: globalThis.fetch,
       mode: 'scheduled',
-    }).then(() => undefined),
+    }).then(() => undefined);
+  },
 });
-const net = netFromEnv(process.env);
-const collector = createCollector(db, net, capsFromNet(net));
 const app = createApp(db, {
   heartbeatSec: config.heartbeatSec,
   collector,

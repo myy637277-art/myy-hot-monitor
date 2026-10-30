@@ -7,12 +7,12 @@ import { readDigest } from './notify/digest.ts';
 export const HEARTBEAT_JOB = 'heartbeat';
 const SHANGHAI = 'Asia/Shanghai';
 
-export function recordRun(db: Db, name: string, at = new Date()): void {
+export function recordRun(db: Db, name: string, at = new Date(), lastError: string | null = null): void {
   db.insert(jobRuns)
-    .values({ name, lastRunAt: at, runCount: 1 })
+    .values({ name, lastRunAt: at, runCount: 1, lastError })
     .onConflictDoUpdate({
       target: jobRuns.name,
-      set: { lastRunAt: at, runCount: sql`${jobRuns.runCount} + 1`, lastError: null },
+      set: { lastRunAt: at, runCount: sql`${jobRuns.runCount} + 1`, lastError },
     })
     .run();
 }

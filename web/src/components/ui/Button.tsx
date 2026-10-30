@@ -1,4 +1,5 @@
 import type { ButtonHTMLAttributes } from 'react';
+import { cn } from '../../lib/utils.ts';
 
 type Variant = 'primary' | 'ghost';
 
@@ -16,7 +17,11 @@ export function Button({
   return (
     <button
       type={type}
-      className={`inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 px-5 font-display text-sm font-semibold tracking-[0.12em] uppercase transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50 ${variants[variant]} ${className}`}
+      className={cn(
+        'inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 px-4 text-sm font-medium transition-colors duration-150 disabled:cursor-not-allowed disabled:opacity-50',
+        variants[variant],
+        className,
+      )}
       {...props}
     />
   );

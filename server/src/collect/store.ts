@@ -2,13 +2,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { EmbeddingNote, SourceRunStatus, SourceStatus, SourceType } from '@hot/shared';
 import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/index.ts';
-import { crawlBudget, fetchCache, items, searchState, sources, stories, storyItems, usageDaily } from '../db/schema.ts';
+import { crawlBudget, fetchCache, items, jobRuns, searchState, sources, stories, storyItems, usageDaily } from '../db/schema.ts';
 import { buildCatalog, type CatalogEntry } from './catalog.ts';
 import { homepageCards, type HomeItem, type HomeRow } from './home.ts';
 import { bufferToFloats, floatsToBuffer } from './embed.ts';
 import { decideMatch, type MatchCandidate } from './merge.ts';
 import { parseSimhash, simhashHex } from './simhash.ts';
 import { addDays, nextShanghaiMidnight, shanghaiDate } from './time.ts';
+import { loadTrust } from '../trust.ts';
 import type { Attempt, RawItem } from './types.ts';
 
 const SEARCH_STATE_ID = 'global';
@@ -249,25 +250,29 @@ const STATUS_TEXT: Record<SourceRunStatus, string> = {
   skipped: '本轮跳过',
   error: '失败',
   unconfigured: '未配置密钥',
+  disabled: '已关闭',
 };
 
 export function listSourceStatus(
   db: Db,
   now: Date,
   opts: { twitterConfigured: boolean; caps: { search: number; twitter: number }; running: boolean; embedding: EmbeddingNote },
-): { day: string; running: boolean; embedding: EmbeddingNote; sources: SourceStatus[] } {
+): { day: string; running: boolean; embedding: EmbeddingNote; lastCollectAt: string | null; lastCollectNote: string | null; sources: SourceStatus[] } {
   const catalog = ensureSources(db, opts.caps);
   const day = shanghaiDate(now);
   const usageRows = db.select().from(usageDaily).where(eq(usageDaily.day, day)).all();
   const sourceRows = db.select().from(sources).all();
   const byId = new Map(sourceRows.map((row) => [row.id, row]));
+  const collect = db.select().from(jobRuns).where(eq(jobRuns.name, 'collect')).get();
 
   const listed = catalog.map((entry) => {
     const row = byId.get(entry.id);
     const pause = activePause(db, entry.id, now);
     const usage = usageRows.find((item) => item.sourceId === entry.id);
+    const enabled = row?.enabled !== false;
     let status: SourceRunStatus = 'idle';
-    if (entry.id === 'twitter' && !opts.twitterConfigured) status = 'unconfigured';
+    if (!enabled) status = 'disabled';
+    else if (entry.id === 'twitter' && !opts.twitterConfigured) status = 'unconfigured';
     else if (pause) status = 'paused';
     else if (row?.lastStatus === 'skipped') status = 'skipped';
     else if (row?.lastStatus === 'error') status = 'error';
@@ -279,12 +284,13 @@ export function listSourceStatus(
       id: entry.id,
       type: entry.type as SourceType,
       name: entry.name,
+      enabled,
       status,
       statusText: STATUS_TEXT[status],
       pauseReason: pause?.reason ?? (status === 'paused' ? row?.lastError ?? null : null),
       pausedUntil: pause?.until.toISOString() ?? null,
       lastSuccessAt: row?.lastSuccessAt?.toISOString() ?? null,
-      lastError: status === 'ok' ? null : row?.lastError ?? null,
+      lastError: status === 'ok' || status === 'disabled' ? null : row?.lastError ?? null,
       usage: {
         requests: usage?.requests ?? 0,
         items: usage?.items ?? 0,
@@ -293,7 +299,14 @@ export function listSourceStatus(
     };
   });
 
-  return { day, running: opts.running, embedding: opts.embedding, sources: listed };
+  return {
+    day,
+    running: opts.running,
+    embedding: opts.embedding,
+    lastCollectAt: collect?.lastRunAt.toISOString() ?? null,
+    lastCollectNote: collect?.lastError ?? null,
+    sources: listed,
+  };
 }
 
 export function listStories(db: Db, limit: number): Array<{
@@ -396,13 +409,40 @@ export function loadHomeRows(db: Db): HomeRow[] {
       feedVerdict: story.feedVerdict,
       feedReason: story.feedReason,
       feedJudgedAt: story.feedJudgedAt,
+      feedBadge: story.feedBadge,
       items: homeItems,
     };
   });
 }
 
 export function listHomepage(db: Db, limit: number, now: Date, modelOpen: boolean) {
-  return homepageCards(loadHomeRows(db), now, modelOpen).slice(0, limit);
+  const domains = loadTrust(db).domains;
+  return homepageCards(loadHomeRows(db), now, modelOpen, domains).slice(0, limit);
+}
+
+/** First collect only records counts. Later collects mark new homepage stories and source gains. */
+export function markHomeBadges(db: Db, now: Date, modelOpen: boolean): void {
+  const domains = loadTrust(db).domains;
+  const cards = homepageCards(loadHomeRows(db), now, modelOpen, domains);
+  const prevRows = db.select({ id: stories.id, homeSourceCount: stories.homeSourceCount }).from(stories).all();
+  const prev = new Map(prevRows.map((row) => [row.id, row.homeSourceCount]));
+  const seenBefore = prevRows.some((row) => row.homeSourceCount != null);
+  db.update(stories).set({ feedBadge: null }).run();
+  for (const card of cards) {
+    const count = card.sources.length;
+    const before = prev.get(card.id) ?? null;
+    let badge: string | null = null;
+    if (seenBefore && before == null) badge = '新上榜';
+    else if (before != null && count > before) badge = `多了 ${count - before} 个来源`;
+    db.update(stories).set({ feedBadge: badge, homeSourceCount: count }).where(eq(stories.id, card.id)).run();
+  }
+}
+
+export function setSourceEnabled(db: Db, id: string, enabled: boolean): boolean {
+  const row = db.select().from(sources).where(eq(sources.id, id)).get();
+  if (!row) return false;
+  db.update(sources).set({ enabled }).where(eq(sources.id, id)).run();
+  return true;
 }
 
 export { nextShanghaiMidnight };

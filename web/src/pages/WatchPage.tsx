@@ -7,6 +7,7 @@ import { HudCard } from '../components/ui/HudCard.tsx';
 import { PageHeader } from '../components/ui/PageHeader.tsx';
 import { useAddWatch, useDeleteWatch, usePauseWatch, useWatches } from '../lib/feed.ts';
 import { fmtDateTime } from '../lib/useHealth.ts';
+import { httpUrl, StoryTitleLink } from '../components/story-link.tsx';
 
 const channelLabel: Record<NotifyChannel, { text: string; tone: Tone }> = {
   sent: { text: '已推送微信', tone: 'ok' },
@@ -62,8 +63,8 @@ export function WatchPage() {
           </p>
         )}
         {watches.data && watches.data.watches.length === 0 && (
-          <div className="mt-4 flex flex-col items-center gap-3 sm:flex-row sm:items-start">
-            <div className="w-28 shrink-0">
+          <div className="mt-4 flex items-center gap-3">
+            <div className="w-12 shrink-0">
               <Agent id="lynx" expression="focus" />
             </div>
             <p className="text-sm text-muted">还没有关键词。添加后，到设置页点「立即采集」，新故事会在下面出现。</p>
@@ -110,7 +111,9 @@ export function WatchPage() {
               return (
                 <li key={note.id} className="border border-line px-3 py-2">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium">{note.title}</span>
+                    <span className="font-medium">
+                      <StoryTitleLink title={note.title} href={httpUrl(note.url)} />
+                    </span>
                     <Badge tone="info">{note.keyword}</Badge>
                     <Badge tone={channel.tone}>{channel.text}</Badge>
                   </div>

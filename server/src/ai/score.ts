@@ -5,6 +5,7 @@ import type { Db } from '../db/index.ts';
 import { domainReputation, items, sources, stories, storyItems, watches, xAccountReputation } from '../db/schema.ts';
 import { listDirections, termsMatch } from '../discover/interests.ts';
 import { keywordHits } from '../notify/watch.ts';
+import { loadTrust } from '../trust.ts';
 import {
   blendCredibility,
   credibilityRule,
@@ -165,7 +166,15 @@ async function scoreNow(db: Db, env: AiEnv): Promise<void> {
     }
     const extra = `${story.summary ?? ''}\n${snippetByStory.get(story.id) ?? ''}`;
     const keyword = keywords.some((keyword) => keywordHits(keyword, story.title, story.summaryZh, extra));
-    const interest = directions.some((direction) => termsMatch(direction.terms, story.title, story.summaryZh, extra, direction.aliases));
+    const interest = directions.some((direction) =>
+      termsMatch(
+        direction.terms,
+        `${story.eventTitle ?? ''}\n${story.title}`,
+        story.summaryZh,
+        story.summary ?? '',
+        direction.aliases,
+      ),
+    );
     if (!freshIds.has(story.id) && !keyword && !interest) return [];
     return [{ story, items: scored, relevant: locallyRelevant(scored), keyword, interest }];
   });
@@ -225,12 +234,13 @@ async function scoreNow(db: Db, env: AiEnv): Promise<void> {
   }
 
   const now = env.now();
+  const trust = loadTrust(db);
   for (const row of prepared) {
     const summaryHit = summaries.get(row.story.id);
     const fail = failures.get(row.story.id);
     const needsModel = row.relevant || row.keyword || row.interest;
     if (keyed && needsModel && !summaryHit && !fail) continue;
-    const rule = credibilityRule(row.items);
+    const rule = credibilityRule(row.items, trust);
     const verdict = verdicts.get(row.story.id);
     const modelScore = verdict && Number.isFinite(verdict.score) ? Math.max(0, Math.min(100, Math.round(verdict.score))) : null;
     const previousSummary = row.story.aiMode === 'model' && row.story.summaryZh && hasHan(row.story.summaryZh) ? row.story.summaryZh : null;

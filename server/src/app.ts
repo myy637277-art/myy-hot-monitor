@@ -1,17 +1,19 @@
-import type { CollectResponse, DigestResponse, DigestSendResponse, DiscoverResponse, HealthResponse, SourcesResponse, StoriesResponse, WatchesResponse } from '@hot/shared';
+import type { CollectResponse, DigestResponse, DigestSendResponse, DiscoverResponse, HealthResponse, SourcesResponse, StoriesResponse, TrustedResponse, WatchesResponse } from '@hot/shared';
 import express from 'express';
 import { z } from 'zod';
 import { aiEnvForNet, aiEnvFromProcess, readAiStatus } from './ai/score.ts';
 import { embeddingLayerStatus } from './collect/embed.ts';
 import { capsFromNet, type Collector } from './collect/run.ts';
-import { listHomepage, listSourceStatus } from './collect/store.ts';
+import { ensureSources, listHomepage, listSourceStatus, setSourceEnabled } from './collect/store.ts';
 import type { Net } from './collect/types.ts';
 import { integrationStatus } from './config.ts';
 import type { Db } from './db/index.ts';
 import { aliasesForTerms } from './discover/aliases.ts';
 import { createInterest, deleteInterest, listDiscoveries, listInterests, peekInterest, updateInterest } from './discover/interests.ts';
-import { deliverDigest, readDigest, saveDigest } from './notify/digest.ts';
+import { deliverDigest, listDigestLogs, readDigest, saveDigest } from './notify/digest.ts';
 import { createWatch, deleteWatch, listWatchState, setWatchPaused } from './notify/watch.ts';
+import { addTrusted, deleteTrusted, listTrusted } from './trust.ts';
+
 import { getRun, HEARTBEAT_JOB } from './scheduler.ts';
 
 const limitSchema = z.coerce.number().int().min(1).max(100);
@@ -27,6 +29,11 @@ const digestSchema = z.object({
   minute: z.number().int().min(0).max(59),
   includeHome: z.boolean(),
   includeKeywords: z.boolean(),
+});
+const enabledSchema = z.object({ enabled: z.boolean() });
+const trustSchema = z.object({
+  kind: z.enum(['domain', 'handle']),
+  value: z.string().trim().min(1).max(80),
 });
 
 function routeId(value: string | string[] | undefined): string | undefined {
@@ -139,7 +146,7 @@ export function createApp(
   });
 
   app.get('/api/v1/digest', (_req, res) => {
-    const body: DigestResponse = { ok: true, digest: readDigest(db, opts.net?.now() ?? new Date()) };
+    const body: DigestResponse = { ok: true, digest: readDigest(db, opts.net?.now() ?? new Date()), logs: listDigestLogs(db) };
     res.json(body);
   });
 
@@ -151,7 +158,7 @@ export function createApp(
     }
     const digest = saveDigest(db, parsed.data, opts.net?.now() ?? new Date());
     opts.onDigestChange?.();
-    const body: DigestResponse = { ok: true, digest };
+    const body: DigestResponse = { ok: true, digest, logs: listDigestLogs(db) };
     res.json(body);
   });
 
@@ -227,6 +234,49 @@ export function createApp(
   app.delete('/api/v1/discover/:id', (req, res) => {
     const id = z.string().uuid().safeParse(routeId(req.params.id));
     if (!id.success || !deleteInterest(db, id.data)) {
+      res.status(404).json({ ok: false, error: 'not_found' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  app.patch('/api/v1/sources/:id', (req, res) => {
+    const parsed = enabledSchema.safeParse(req.body);
+    const id = z.string().trim().min(1).max(80).safeParse(routeId(req.params.id));
+    if (!parsed.success || !id.success) {
+      res.status(400).json({ ok: false, error: 'bad_request' });
+      return;
+    }
+    ensureSources(db, caps());
+    if (!setSourceEnabled(db, id.data, parsed.data.enabled)) {
+      res.status(404).json({ ok: false, error: 'not_found' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  app.get('/api/v1/trusted', (_req, res) => {
+    const body: TrustedResponse = { ok: true, sources: listTrusted(db) };
+    res.json(body);
+  });
+
+  app.post('/api/v1/trusted', (req, res) => {
+    const parsed = trustSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'bad_request' });
+      return;
+    }
+    const result = addTrusted(db, parsed.data.kind, parsed.data.value, opts.net?.now() ?? new Date());
+    if (!result.ok) {
+      res.status(result.error === 'duplicate' ? 409 : 400).json(result);
+      return;
+    }
+    res.status(201).json(result);
+  });
+
+  app.delete('/api/v1/trusted/:id', (req, res) => {
+    const id = z.string().uuid().safeParse(routeId(req.params.id));
+    if (!id.success || !deleteTrusted(db, id.data)) {
       res.status(404).json({ ok: false, error: 'not_found' });
       return;
     }

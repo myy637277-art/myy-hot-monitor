@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type { NotifyChannel, Watch, WatchNotification } from '@hot/shared';
-import { and, desc, eq, gte, inArray, isNull, or } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Db } from '../db/index.ts';
-import { items, notifications, stories, storyItems, watches } from '../db/schema.ts';
+import { items, jobRuns, notifications, stories, storyItems, watches } from '../db/schema.ts';
 import { postServerchan } from './serverchan.ts';
 
 const LATIN = /[a-z0-9][a-z0-9+]{3,}/g;
-let matchNote: string | null = null;
+const MATCH_JOB = 'keyword-match';
 
 export function keywordHits(keyword: string, title: string, summaryZh: string | null, extra = ''): boolean {
   const needle = keyword.trim().toLowerCase();
@@ -25,7 +25,7 @@ function toWatch(row: typeof watches.$inferSelect): Watch {
   };
 }
 
-function toNote(row: typeof notifications.$inferSelect): WatchNotification {
+function toNote(row: typeof notifications.$inferSelect, url: string | null): WatchNotification {
   const channel: NotifyChannel = row.channel === 'sent' || row.channel === 'failed' ? row.channel : 'skipped';
   return {
     id: row.id,
@@ -37,13 +37,20 @@ function toNote(row: typeof notifications.$inferSelect): WatchNotification {
     channel,
     httpStatus: row.httpStatus ?? null,
     createdAt: row.createdAt.toISOString(),
+    url,
   };
 }
 
 export function listWatchState(db: Db): { watches: Watch[]; notifications: WatchNotification[]; matchNote: string | null } {
   const watchRows = db.select().from(watches).orderBy(desc(watches.createdAt)).all();
   const noteRows = db.select().from(notifications).orderBy(desc(notifications.createdAt)).limit(50).all();
-  return { watches: watchRows.map(toWatch), notifications: noteRows.map(toNote), matchNote };
+  const urls = storyUrls(db, noteRows.map((row) => row.storyId));
+  const match = db.select().from(jobRuns).where(eq(jobRuns.name, MATCH_JOB)).get();
+  return {
+    watches: watchRows.map(toWatch),
+    notifications: noteRows.map((row) => toNote(row, urls.get(row.storyId) ?? null)),
+    matchNote: match?.lastError ?? null,
+  };
 }
 
 export function createWatch(db: Db, keyword: string, now: Date): { ok: true; watch: Watch } | { ok: false; error: 'duplicate' } {
@@ -137,8 +144,30 @@ export async function matchWatches(
       created += 1;
     }
   }
-  matchNote = active.length > 0 && matched === 0 ? '这次采集没有命中关键词。' : null;
+  const matchNote = active.length > 0 && matched === 0 ? '这次采集没有命中关键词。' : null;
+  db.insert(jobRuns)
+    .values({ name: MATCH_JOB, lastRunAt: opts.now, runCount: 1, lastError: matchNote })
+    .onConflictDoUpdate({
+      target: jobRuns.name,
+      set: { lastRunAt: opts.now, runCount: sql`${jobRuns.runCount} + 1`, lastError: matchNote },
+    })
+    .run();
   return created;
+}
+
+function storyUrls(db: Db, storyIds: string[]): Map<string, string> {
+  const out = new Map<string, string>();
+  if (storyIds.length === 0) return out;
+  const links = db.select().from(storyItems).where(inArray(storyItems.storyId, storyIds)).all();
+  const itemIds = [...new Set(links.map((link) => link.itemId))];
+  const itemRows = itemIds.length === 0 ? [] : db.select().from(items).where(inArray(items.id, itemIds)).all();
+  const itemById = new Map(itemRows.map((row) => [row.id, row]));
+  for (const link of links) {
+    if (out.has(link.storyId)) continue;
+    const url = itemById.get(link.itemId)?.url;
+    if (url && /^https?:\/\//i.test(url)) out.set(link.storyId, url);
+  }
+  return out;
 }
 
 function snippetText(db: Db, storyIds: string[]): Map<string, string> {

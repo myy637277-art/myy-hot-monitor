@@ -4,6 +4,7 @@ import { fetchUrl, isTimeout, isVerification } from './http.ts';
 import { filterKeywordHits } from './home.ts';
 import { hitsToItems, parseDdg, parseGoogle, parseSogou } from './parse.ts';
 import { activePause, getCachedBody, getSearchUsed, setCachedBody, setLastSearchAt, getLastSearchAt } from './store.ts';
+import { loadTrust } from '../trust.ts';
 import { nextShanghaiMidnight, shanghaiDate } from './time.ts';
 import { failedAttempt, okAttempt, type Attempt, type Net } from './types.ts';
 
@@ -19,6 +20,7 @@ export async function collectSearch(db: Db, engine: SearchEngine, net: Net, quer
   if (!meta) throw new Error(`unknown engine ${engine}`);
   const q = query.trim() || net.searchQuery;
   const now = net.now();
+  const extraDomains = loadTrust(db).domains;
   const pause = activePause(db, meta.id, now);
   if (pause) return failedAttempt(meta.id, 'paused', pause.reason ?? '暂停至明天', { pauseReason: pause.reason });
 
@@ -41,7 +43,7 @@ export async function collectSearch(db: Db, engine: SearchEngine, net: Net, quer
         pauseReason: reason,
       });
     }
-    const replay = okAttempt(meta.id, finishHits(hitsToItems(meta.id, parsers[engine](cached)), q, net), 0);
+    const replay = okAttempt(meta.id, finishHits(hitsToItems(meta.id, parsers[engine](cached)), q, net, extraDomains), 0);
     replay.usageItems = 0;
     return replay;
   }
@@ -73,14 +75,19 @@ export async function collectSearch(db: Db, engine: SearchEngine, net: Net, quer
       return failedAttempt(meta.id, 'paused', reason, { requests: 1, pauseUntil: until, pauseReason: reason });
     }
     setCachedBody(db, cacheKey, res.body, sentAt);
-    return okAttempt(meta.id, finishHits(hitsToItems(meta.id, parsers[engine](res.body)), q, net));
+    return okAttempt(meta.id, finishHits(hitsToItems(meta.id, parsers[engine](res.body)), q, net, extraDomains));
   } catch (err) {
     const reason = isTimeout(err) ? '请求超时' : '请求失败';
     return failedAttempt(meta.id, 'paused', reason, { requests: 1, pauseUntil: until, pauseReason: reason });
   }
 }
 
-function finishHits(items: ReturnType<typeof hitsToItems>, query: string, net: Net): ReturnType<typeof hitsToItems> {
+function finishHits(
+  items: ReturnType<typeof hitsToItems>,
+  query: string,
+  net: Net,
+  extraDomains: readonly string[],
+): ReturnType<typeof hitsToItems> {
   const keyword = query.trim().toLowerCase() !== net.searchQuery.trim().toLowerCase();
-  return keyword ? filterKeywordHits(items, net.now()) : items;
+  return keyword ? filterKeywordHits(items, net.now(), extraDomains) : items;
 }

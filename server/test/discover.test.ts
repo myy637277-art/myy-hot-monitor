@@ -283,4 +283,35 @@ describe('interest discovery', () => {
     await request(app).patch(`/api/v1/discover/${id}`).send({ label: '设备', terms: ['晶圆'] }).expect(200);
     expect(calls).toBe(2);
   });
+
+  it('matches a typed term or stored alias in the title or summary, not a vague name or a generic token', () => {
+    const { db, close } = memoryDb();
+    opened.push(close);
+    db.insert(sources).values({ id: 'hn', type: 'hn', name: 'Hacker News' }).run();
+    db.insert(sources).values({ id: 'gh', type: 'github', name: 'GitHub' }).run();
+    const samples: Array<[string, string, string, string | null]> = [
+      ['chain', 'hn', 'Forging a Microsoft Edge Full Chain', 'logic bugs only'],
+      ['tail', 'hn', 'Tailscale SSH investigation', 'the patch remains under review'],
+      ['vague', 'gh', 'github 上的一个研究方向', '这项研究发布在 github'],
+      ['term', 'hn', '实验室讨论人工智能入学', null],
+      ['word', 'hn', 'A coding model ships', 'The AI model is available by email'],
+      ['inbox', 'hn', 'Daily email remains available', 'check your inbox'],
+      ['machine', 'hn', 'Notes on machine intelligence', null],
+      ['shop', 'hn', 'A machine for the shop', 'ordinary tools'],
+      ['grad', 'hn', '计算机研究生方向的论文清单', '本周更新'],
+      ['research', 'hn', '这是一个新的研究方向', '综述'],
+    ];
+    for (const [id, sourceId, title, summary] of samples) {
+      addItem(db, { id, sourceId, title, summary, publishedAt: now, url: `https://example.com/${id}` });
+    }
+    createInterest(db, '计算机研究生方向', ['人工智能'], now, {
+      人工智能: ['AI', 'artificial intelligence', 'machine intelligence', '研究', 'github', '方向'],
+    });
+    createInterest(db, '人工智能方向', ['计算机研究生方向'], now, { 计算机研究生方向: ['方向', '研究'] });
+    const found = listDiscoveries(db, now);
+    expect(found.map((story) => story.id).sort()).toEqual(['grad', 'machine', 'term', 'word']);
+    expect(found.find((story) => story.id === 'grad')?.interestLabel).toBe('人工智能方向');
+    expect(found.find((story) => story.id === 'term')?.interestLabel).toBe('计算机研究生方向');
+    expect(listHomepage(db, 100, now, false).map((row) => row.id)).toEqual([]);
+  });
 });

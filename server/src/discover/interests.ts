@@ -6,7 +6,6 @@ import { HOME_WINDOW_MS, type HomeItem, type HomeRow } from '../collect/home.ts'
 import { loadHomeRows } from '../collect/store.ts';
 import type { Db } from '../db/index.ts';
 import { interests } from '../db/schema.ts';
-import { keywordHits } from '../notify/watch.ts';
 import { clipAliasMap } from './aliases.ts';
 
 const DIRECTION_CAP = 20;
@@ -15,6 +14,8 @@ const TERM_CAP = 5;
 const DISCOVER_CAP = 30;
 // shortcut: weibo_hot and bili_hot match the homepage block, update both if another hot list is added
 const BLOCKED = new Set(['weibo_hot', 'bili_hot']);
+// A needle that is only one of these does not identify a direction.
+const GENERIC_NEEDLES = new Set(['方向', '研究', '研究方向', 'github', 'github.com']);
 // Fallback when a save did not store model aliases. Arbitrary terms get aliases from DeepSeek at save time.
 const RELATED: Record<string, readonly string[]> = {
   大模型: ['language model', '语言模型'],
@@ -169,23 +170,36 @@ export function interestSearchTerms(db: Db): string[] {
   return out;
 }
 
+function usableNeedle(phrase: string): string | null {
+  const text = phrase.trim().toLowerCase();
+  if (!text || GENERIC_NEEDLES.has(text)) return null;
+  return text;
+}
+
+/** Whole phrase only. Latin needles use word boundaries, so "AI" does not match inside "chain" or "email". */
+function phraseHits(phrase: string, hay: string): boolean {
+  const needle = usableNeedle(phrase);
+  if (!needle) return false;
+  const folded = hay.toLowerCase();
+  if (/[\u3400-\u9fff]/.test(needle)) return folded.includes(needle);
+  const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(?:^|[^a-z0-9])${escaped}(?![a-z0-9])`, 'i').test(folded);
+}
+
 export function termsMatch(
   terms: readonly string[],
   title: string,
   summaryZh: string | null,
-  extra = '',
+  summary = '',
   aliases: Record<string, string[]> = {},
 ): boolean {
+  const hay = `${title}\n${summaryZh ?? ''}\n${summary}`;
   for (const term of terms) {
-    if (keywordHits(term, title, summaryZh, extra)) return true;
+    if (phraseHits(term, hay)) return true;
     const phrases = [...(aliases[term] ?? []), ...(RELATED[term.trim().toLowerCase()] ?? [])];
-    if (phrases.some((phrase) => keywordHits(phrase, title, summaryZh, extra))) return true;
+    if (phrases.some((phrase) => phraseHits(phrase, hay))) return true;
   }
   return false;
-}
-
-function itemText(row: HomeRow, items: HomeItem[]): string {
-  return `${row.summary ?? ''}\n${items.map((item) => `${item.title}\n${item.summary ?? ''}`).join('\n')}`;
 }
 
 function toStory(row: HomeRow, items: HomeItem[], interestLabel: string): DiscoverStory {
@@ -221,6 +235,7 @@ function toStory(row: HomeRow, items: HomeItem[], interestLabel: string): Discov
     eventTitle,
     feedReason: row.feedReason,
     unverified: row.aiMode !== 'model',
+    feedBadge: row.feedBadge,
     sources,
     interestLabel,
   };
@@ -235,8 +250,10 @@ export function listDiscoveries(db: Db, now: Date): DiscoverStory[] {
     const visible = row.items.filter((item) => !BLOCKED.has(item.sourceType));
     const fresh = visible.filter((item) => item.publishedAt != null && item.publishedAt.getTime() >= cutoff);
     if (fresh.length === 0) continue;
-    const extra = itemText(row, visible);
-    const hit = active.find((interest) => termsMatch(interest.terms, row.title, row.summaryZh, extra, interest.aliases));
+    const title = [row.eventTitle, row.title].filter((part) => part && part.trim()).join('\n');
+    const hit = active.find((interest) =>
+      termsMatch(interest.terms, title, row.summaryZh, row.summary ?? '', interest.aliases),
+    );
     if (!hit) continue;
     const at = Math.max(...fresh.map((item) => item.publishedAt?.getTime() ?? 0));
     cards.push({ story: toStory(row, fresh, hit.label), at });

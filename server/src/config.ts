@@ -26,7 +26,6 @@ export function integrationStatus(): Record<IntegrationName, boolean> {
   return {
     deepseek: has('DEEPSEEK_API_KEY'),
     twitterapiIo: has('TWITTERAPI_IO_API_KEY'),
-    smtp: has('SMTP_HOST', 'SMTP_USER', 'SMTP_PASS', 'MAIL_TO'),
     serverchan: has('SERVERCHAN_SENDKEY'),
   };
 }
